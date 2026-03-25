@@ -176,3 +176,7 @@ macOS：`./evolve.command`　Windows：`evolve.bat`
 - `prompts/verify-bug.md` — 驗證 prompt 模板
 - `prompts/evolve.md` — Pattern 進化 prompt 模板
 - `patterns/*.md` — 各語言的檢測規則，可自由新增或修改
+
+## License
+
+本專案採用 [MIT License](LICENSE) 開源授權。
