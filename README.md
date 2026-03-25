@@ -25,9 +25,12 @@ ai-pr-review/
 ├── review-pr.bat        # Windows 主程式（雙擊執行）
 ├── verify-bug.command   # macOS BUG 驗證
 ├── verify-bug.bat       # Windows BUG 驗證
+├── evolve.command       # macOS Pattern 進化
+├── evolve.bat           # Windows Pattern 進化
 ├── prompts/
 │   ├── review-pr.md     # Review prompt 模板（含 {{PATTERNS}} 佔位符）
-│   └── verify-bug.md    # 驗證 prompt 模板
+│   ├── verify-bug.md    # 驗證 prompt 模板
+│   └── evolve.md        # Pattern 進化 prompt 模板
 ├── patterns/
 │   ├── base.md          # 通用 patterns（語言無關）
 │   ├── javascript.md
@@ -36,7 +39,8 @@ ai-pr-review/
 │   └── php.md
 └── results/             # 輸出報告（.gitignore）
     ├── PR_*_.md
-    └── PR_*_verify.md
+    ├── PR_*_verify.md
+    └── evolve_*.md
 ```
 
 ## 使用方式
@@ -145,8 +149,30 @@ Review 報告儲存為 `PR_{number}_{timestamp}.md`，包含：
 
 Pattern 檔格式參考既有檔案，依 🔴 BUG / 🟡 WARN / 🟢 NIT 分級，每個 pattern 包含說明和 example。
 
+### Pattern 進化（evolve）
+
+累積足夠的 review + verify 報告後，可執行 evolve 腳本讓 AI 分析歷史數據，自動產出 pattern 改善建議：
+
+```
+📊 掃描 results/ 所有歷史報告
+        ↓
+🔍 統計每個 pattern 的命中率 / 誤報率
+        ↓
+🔎 找出 CONFIRMED bug 中不屬於任何現有 pattern 的案例
+        ↓
+🤖 AI 分析 → 產出建議
+   - 🆕 建議新增的 patterns
+   - ✏️ 建議修改的 patterns
+   - 🗑️ 建議移除的 patterns
+        ↓
+📝 輸出建議報告，人工確認後手動套用
+```
+
+macOS：`./evolve.command`　Windows：`evolve.bat`
+
 ## 自訂 Prompt
 
-- `review-pr.md` — Review 主模板，`{{PATTERNS}}` 佔位符會被腳本自動替換為偵測到的 patterns
-- `verify-bug.md` — 驗證 prompt 模板
+- `prompts/review-pr.md` — Review 主模板，`{{PATTERNS}}` 佔位符會被腳本自動替換為偵測到的 patterns
+- `prompts/verify-bug.md` — 驗證 prompt 模板
+- `prompts/evolve.md` — Pattern 進化 prompt 模板
 - `patterns/*.md` — 各語言的檢測規則，可自由新增或修改
