@@ -52,12 +52,23 @@ echo 🤖 選擇 AI 引擎：
 echo   [1] Claude Sonnet（預設，正式 review）
 echo   [2] Claude Opus（深度分析）
 echo   [3] opencode
-echo   [4] 自訂指令
+echo   [4] OpenAI 相容 API（Ollama / OpenRouter / 其他）
+echo   [5] 自訂指令
 echo.
 set "ENGINE_CHOICE=1"
-set /p "ENGINE_CHOICE=選擇 [1/2/3/4]（直接 Enter 為 1）: "
+set /p "ENGINE_CHOICE=選擇 [1/2/3/4/5]（直接 Enter 為 1）: "
 
 if "%ENGINE_CHOICE%"=="4" (
+    echo.
+    set "API_BASE=http://localhost:11434/v1"
+    set /p "API_BASE=API Base URL（如 http://localhost:11434/v1）: "
+    set "API_KEY="
+    set /p "API_KEY=API Key（無則直接 Enter）: "
+    set "API_MODEL=llama3"
+    set /p "API_MODEL=Model 名稱: "
+)
+
+if "%ENGINE_CHOICE%"=="5" (
     echo.
     echo 請輸入自訂指令（需支援 stdin 輸入，stdout 輸出）：
     echo 範例: claude -p --model haiku
@@ -67,7 +78,8 @@ if "%ENGINE_CHOICE%"=="4" (
 if "%ENGINE_CHOICE%"=="1" set "ENGINE_NAME=Claude Sonnet"
 if "%ENGINE_CHOICE%"=="2" set "ENGINE_NAME=Claude Opus"
 if "%ENGINE_CHOICE%"=="3" set "ENGINE_NAME=opencode"
-if not "%ENGINE_CHOICE%"=="1" if not "%ENGINE_CHOICE%"=="2" if not "%ENGINE_CHOICE%"=="3" set "ENGINE_NAME=%ENGINE_CHOICE%"
+if "%ENGINE_CHOICE%"=="4" set "ENGINE_NAME=API (!API_MODEL!)"
+if not "%ENGINE_CHOICE%"=="1" if not "%ENGINE_CHOICE%"=="2" if not "%ENGINE_CHOICE%"=="3" if not "%ENGINE_CHOICE%"=="4" set "ENGINE_NAME=%ENGINE_CHOICE%"
 
 echo    → 使用: %ENGINE_NAME%
 
@@ -208,6 +220,17 @@ if "%ENGINE_CHOICE%"=="1" (
     jq -s "last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}" "%AI_RAW%.parts" > "%AI_USAGE%" 2>nul
     del /f "%AI_RAW%" >nul 2>&1
     del /f "%AI_RAW%.parts" >nul 2>&1
+) else if "%ENGINE_CHOICE%"=="4" (
+    powershell -NoProfile -Command ^
+        "$prompt = Get-Content -Raw '%PROMPT_TMPFILE%';" ^
+        "$body = @{model='!API_MODEL!'; messages=@(@{role='user'; content=$prompt})} | ConvertTo-Json -Depth 5 -Compress;" ^
+        "$headers = @{'Content-Type'='application/json'};" ^
+        "$key = '!API_KEY!';" ^
+        "if ($key) { $headers['Authorization'] = 'Bearer ' + $key };" ^
+        "$r = Invoke-RestMethod -Uri '!API_BASE!/chat/completions' -Method Post -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 600;" ^
+        "$r.choices[0].message.content | Out-File -Encoding utf8 '%AI_TMPFILE%' -NoNewline;" ^
+        "$u = @{input_tokens=$r.usage.prompt_tokens; output_tokens=$r.usage.completion_tokens; cache_creation=0; cache_read=0; cost_usd=0} | ConvertTo-Json;" ^
+        "$u | Out-File -Encoding utf8 '%AI_USAGE%' -NoNewline"
 ) else (
     type "%PROMPT_TMPFILE%" | %ENGINE_CHOICE% > "%AI_TMPFILE%"
     echo {} > "%AI_USAGE%"

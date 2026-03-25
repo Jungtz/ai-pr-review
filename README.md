@@ -10,6 +10,7 @@ AI-powered GitHub PR review tool — 自動取得 PR diff，透過 AI 分析潛�
 | [jq](https://jqlang.github.io/jq) | 解析 JSON | `brew install jq` / `winget install jqlang.jq` |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI 引擎（預設） | `npm install -g @anthropic-ai/claude-code` |
 | [opencode](https://opencode.ai) | AI 引擎（選用） | `npm install -g opencode-ai` |
+| OpenAI 相容 API | AI 引擎（Ollama / OpenRouter / 其他） | 提供 API Base URL、API Key、Model 名稱 |
 
 使用前請先登入 GitHub CLI：
 
@@ -72,7 +73,8 @@ review-pr.bat
    [1] Claude Sonnet（預設）
    [2] Claude Opus（深度分析）
    [3] opencode
-   [4] 自訂指令
+   [4] OpenAI 相容 API（Ollama / OpenRouter / 其他）
+   [5] 自訂指令
         ↓
 📄 選擇輸出方式
    [1] 儲存為檔案
@@ -103,6 +105,7 @@ review-pr.bat
 🤖 選擇驗證引擎
    [1] Claude Opus（預設）
    [2] opencode
+   [3] OpenAI 相容 API（Ollama / OpenRouter / 其他）
         ↓
 🔧 提取報告中所有 🔴 問題
         ↓

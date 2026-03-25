@@ -93,12 +93,23 @@ echo.
 echo 🤖 選擇驗證引擎：
 echo   [1] Claude Opus（預設）
 echo   [2] opencode
+echo   [3] OpenAI 相容 API（Ollama / OpenRouter / 其他）
 echo.
 set "ENGINE_CHOICE=1"
-set /p "ENGINE_CHOICE=選擇 [1/2]（直接 Enter 為 1）: "
+set /p "ENGINE_CHOICE=選擇 [1/2/3]（直接 Enter 為 1）: "
 
 if "%ENGINE_CHOICE%"=="1" set "ENGINE_NAME=Claude Opus"
 if "%ENGINE_CHOICE%"=="2" set "ENGINE_NAME=opencode"
+if "%ENGINE_CHOICE%"=="3" (
+    echo.
+    set "API_BASE=http://localhost:11434/v1"
+    set /p "API_BASE=API Base URL（如 http://localhost:11434/v1）: "
+    set "API_KEY="
+    set /p "API_KEY=API Key（無則直接 Enter）: "
+    set "API_MODEL=llama3"
+    set /p "API_MODEL=Model 名稱: "
+    set "ENGINE_NAME=API (!API_MODEL!)"
+)
 echo    → 使用: %ENGINE_NAME%
 
 echo.
@@ -247,6 +258,19 @@ for %%f in ("%BUG_DIR%\bug_*.txt") do (
         jq -s "last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}" "!V_RAW!.parts" > "!V_USAGE!" 2>nul
         del /f "!V_RAW!" >nul 2>&1
         del /f "!V_RAW!.parts" >nul 2>&1
+    ) else if "!ENGINE_CHOICE!"=="3" (
+        pushd "%PROJECT_DIR%"
+        powershell -NoProfile -Command ^
+            "$prompt = Get-Content -Raw '!V_PROMPT!';" ^
+            "$body = @{model='!API_MODEL!'; messages=@(@{role='user'; content=$prompt})} | ConvertTo-Json -Depth 5 -Compress;" ^
+            "$headers = @{'Content-Type'='application/json'};" ^
+            "$key = '!API_KEY!';" ^
+            "if ($key) { $headers['Authorization'] = 'Bearer ' + $key };" ^
+            "$r = Invoke-RestMethod -Uri '!API_BASE!/chat/completions' -Method Post -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 600;" ^
+            "$r.choices[0].message.content | Out-File -Encoding utf8 '!V_TMPFILE!' -NoNewline;" ^
+            "$u = @{input_tokens=$r.usage.prompt_tokens; output_tokens=$r.usage.completion_tokens; cache_creation=0; cache_read=0; cost_usd=0} | ConvertTo-Json;" ^
+            "$u | Out-File -Encoding utf8 '!V_USAGE!' -NoNewline"
+        popd
     )
 
     call :get_seconds V_END

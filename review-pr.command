@@ -64,11 +64,33 @@ run_ai() {
       jq -r 'select(.type=="step_finish") | .part' "$raw_file" | jq -s 'last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}' > "${output_file}.usage" 2>/dev/null
       rm -f "$raw_file"
       ;;
+    4:*)
+      local api_info="${engine#4:}"
+      local model="${api_info%%|*}"
+      local rest="${api_info#*|}"
+      local api_base="${rest%%|*}"
+      local api_key="${rest#*|}"
+      local api_url="${api_base}/chat/completions"
+      # 用 jq 安全建構 JSON payload
+      jq -Rs --arg model "$model" '{model: $model, messages: [{role: "user", content: .}]}' "$prompt_file" > "${raw_file}.req"
+      local auth_header=""
+      if [ -n "$api_key" ]; then
+        auth_header="-H \"Authorization: Bearer ${api_key}\""
+      fi
+      eval curl -s "$api_url" \
+        -H '"Content-Type: application/json"' \
+        $auth_header \
+        -d @"${raw_file}.req" > "$raw_file"
+      jq -r '.choices[0].message.content // empty' "$raw_file" > "$output_file"
+      # 提取 token 用量
+      jq '{input_tokens: .usage.prompt_tokens, output_tokens: .usage.completion_tokens, cache_creation: 0, cache_read: 0, cost_usd: 0}' "$raw_file" > "${output_file}.usage" 2>/dev/null
+      rm -f "$raw_file" "${raw_file}.req"
+      ;;
     *) eval "$engine" < "$prompt_file" > "$output_file"; echo '{}' > "${output_file}.usage" ;;
   esac
 }
 
-ENGINE_LABELS=("" "Claude Sonnet" "Claude Opus" "opencode" "自訂")
+ENGINE_LABELS=("" "Claude Sonnet" "Claude Opus" "opencode" "" "自訂")
 
 # Step 1: 輸入 PR 連結
 echo "📋 請貼上 PR 連結："
@@ -98,19 +120,33 @@ echo "🤖 選擇 AI 引擎："
 echo "  [1] Claude Sonnet（預設，正式 review）"
 echo "  [2] Claude Opus（深度分析）"
 echo "  [3] opencode"
-echo "  [4] 自訂指令"
+echo "  [4] OpenAI 相容 API（Ollama / OpenRouter / 其他）"
+echo "  [5] 自訂指令"
 echo ""
-read -r -p "選擇 [1/2/3/4]（直接 Enter 為 1）: " ENGINE_CHOICE
+read -r -p "選擇 [1/2/3/4/5]（直接 Enter 為 1）: " ENGINE_CHOICE
 ENGINE_CHOICE=${ENGINE_CHOICE:-1}
 
 if [ "$ENGINE_CHOICE" = "4" ]; then
+  echo ""
+  read -r -p "API Base URL（如 http://localhost:11434/v1）: " API_BASE
+  API_BASE=${API_BASE:-http://localhost:11434/v1}
+  read -r -p "API Key（無則直接 Enter）: " API_KEY
+  read -r -p "Model 名稱: " API_MODEL
+  API_MODEL=${API_MODEL:-llama3}
+  ENGINE_CHOICE="4:${API_MODEL}|${API_BASE}|${API_KEY}"
+fi
+
+if [ "$ENGINE_CHOICE" = "5" ]; then
   echo ""
   echo "請輸入自訂指令（需支援 stdin 輸入，stdout 輸出）："
   echo "範例: claude -p --model haiku"
   read -r ENGINE_CHOICE
 fi
 
-echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}"
+case "$ENGINE_CHOICE" in
+  4:*) echo "   → 使用: API (${API_MODEL} @ ${API_BASE})" ;;
+  *) echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
+esac
 
 # Step 3: 選擇輸出方式
 TIMESTAMP=$(date +%y%m%d%H%M%S)
@@ -242,7 +278,10 @@ OUTPUT_TOKENS=${OUTPUT_TOKENS:-0}
 COST_USD=${COST_USD:-0}
 rm -f "$USAGE_FILE"
 
-ENGINE_NAME="${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}"
+case "$ENGINE_CHOICE" in
+  4:*) ENGINE_NAME="API (${ENGINE_CHOICE#4:})" ;;
+  *) ENGINE_NAME="${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
+esac
 
 if [ "$OUTPUT_CHOICE" = "2" ]; then
   less "$TMPFILE"

@@ -42,10 +42,30 @@ run_verify() {
       jq -r 'select(.type=="step_finish") | .part' "$raw_file" | jq -s 'last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}' > "${output_file}.usage" 2>/dev/null
       rm -f "$raw_file"
       ;;
+    3:*)
+      local api_info="${engine#3:}"
+      local model="${api_info%%|*}"
+      local rest="${api_info#*|}"
+      local api_base="${rest%%|*}"
+      local api_key="${rest#*|}"
+      local api_url="${api_base}/chat/completions"
+      jq -Rs --arg model "$model" '{model: $model, messages: [{role: "user", content: .}]}' "$prompt_file" > "${raw_file}.req"
+      local auth_header=""
+      if [ -n "$api_key" ]; then
+        auth_header="-H \"Authorization: Bearer ${api_key}\""
+      fi
+      eval curl -s "$api_url" \
+        -H '"Content-Type: application/json"' \
+        $auth_header \
+        -d @"${raw_file}.req" > "$raw_file"
+      jq -r '.choices[0].message.content // empty' "$raw_file" > "$output_file"
+      jq '{input_tokens: .usage.prompt_tokens, output_tokens: .usage.completion_tokens, cache_creation: 0, cache_read: 0, cost_usd: 0}' "$raw_file" > "${output_file}.usage" 2>/dev/null
+      rm -f "$raw_file" "${raw_file}.req"
+      ;;
   esac
 }
 
-ENGINE_LABELS=("" "Claude Opus" "opencode")
+ENGINE_LABELS=("" "Claude Opus" "opencode" "")
 
 # Timer helper
 step_time() {
@@ -139,10 +159,25 @@ echo ""
 echo "🤖 選擇驗證引擎："
 echo "  [1] Claude Opus（預設）"
 echo "  [2] opencode"
+echo "  [3] OpenAI 相容 API（Ollama / OpenRouter / 其他）"
 echo ""
-read -r -p "選擇 [1/2]（直接 Enter 為 1）: " ENGINE_CHOICE
+read -r -p "選擇 [1/2/3]（直接 Enter 為 1）: " ENGINE_CHOICE
 ENGINE_CHOICE=${ENGINE_CHOICE:-1}
-echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}"
+
+if [ "$ENGINE_CHOICE" = "3" ]; then
+  echo ""
+  read -r -p "API Base URL（如 http://localhost:11434/v1）: " API_BASE
+  API_BASE=${API_BASE:-http://localhost:11434/v1}
+  read -r -p "API Key（無則直接 Enter）: " API_KEY
+  read -r -p "Model 名稱: " API_MODEL
+  API_MODEL=${API_MODEL:-llama3}
+  ENGINE_CHOICE="3:${API_MODEL}|${API_BASE}|${API_KEY}"
+fi
+
+case "$ENGINE_CHOICE" in
+  3:*) echo "   → 使用: API (${API_MODEL} @ ${API_BASE})" ;;
+  *) echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
+esac
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -321,7 +356,11 @@ TOTAL_SEC=$(( TOTAL_ELAPSED % 60 ))
   printf "| 費用 | \$%.4f |\n" "$TOTAL_COST_USD"
   echo ""
   echo "---"
-  printf "Model: %s | Total: %02d:%02d | Tokens: %d in / %d out | Cost: \$%.4f\n" "${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" "$TOTAL_MIN" "$TOTAL_SEC" "$TOTAL_INPUT_TOKENS" "$TOTAL_OUTPUT_TOKENS" "$TOTAL_COST_USD"
+  case "$ENGINE_CHOICE" in
+    3:*) ENGINE_NAME="API (${ENGINE_CHOICE#3:})" ;;
+    *) ENGINE_NAME="${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
+  esac
+  printf "Model: %s | Total: %02d:%02d | Tokens: %d in / %d out | Cost: \$%.4f\n" "$ENGINE_NAME" "$TOTAL_MIN" "$TOTAL_SEC" "$TOTAL_INPUT_TOKENS" "$TOTAL_OUTPUT_TOKENS" "$TOTAL_COST_USD"
 } >> "$VERIFY_FILENAME"
 
 # 輸出摘要
