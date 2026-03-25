@@ -3,7 +3,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PROMPT_FILE="$SCRIPT_DIR/review-pr.md"
+PROMPT_FILE="$SCRIPT_DIR/prompts/review-pr.md"
 TOTAL_START=$SECONDS
 
 # Timer helper: prints elapsed seconds for a step
@@ -114,7 +114,7 @@ echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}"
 
 # Step 3: 選擇輸出方式
 TIMESTAMP=$(date +%y%m%d%H%M%S)
-FILENAME="PR_${PR_NUMBER}_${TIMESTAMP}.md"
+FILENAME="results/PR_${PR_NUMBER}_${TIMESTAMP}.md"
 
 echo ""
 echo "📄 輸出方式："
@@ -162,10 +162,46 @@ DIFF_LINES=$(echo "$PR_DIFF" | wc -l | tr -d ' ')
 echo "   ✓ ${DIFF_LINES} 行 diff $(step_time $STEP_START)"
 echo ""
 
-# Step 6: 組合 prompt 並寫入暫存檔
+# Step 6: 偵測語言並組合 prompt
 STEP_START=$SECONDS
 echo "🔧 [3/4] 準備分析資料..."
+
+# 從 diff 檔案副檔名偵測語言
+DETECTED_LANGS=""
+if echo "$PR_DIFF" | grep -qE '^\+\+\+ b/.*\.(js|ts|tsx|jsx|mjs|cjs)$'; then
+  DETECTED_LANGS="$DETECTED_LANGS javascript"
+fi
+if echo "$PR_DIFF" | grep -qE '^\+\+\+ b/.*\.py$'; then
+  DETECTED_LANGS="$DETECTED_LANGS python"
+fi
+if echo "$PR_DIFF" | grep -qE '^\+\+\+ b/.*\.go$'; then
+  DETECTED_LANGS="$DETECTED_LANGS go"
+fi
+if echo "$PR_DIFF" | grep -qE '^\+\+\+ b/.*\.php$'; then
+  DETECTED_LANGS="$DETECTED_LANGS php"
+fi
+
+# 組合 patterns：base + 偵測到的語言
+PATTERNS_DIR="$SCRIPT_DIR/patterns"
+PATTERNS_CONTENT=$(cat "$PATTERNS_DIR/base.md")
+for LANG in $DETECTED_LANGS; do
+  if [ -f "$PATTERNS_DIR/${LANG}.md" ]; then
+    PATTERNS_CONTENT="${PATTERNS_CONTENT}
+
+$(cat "$PATTERNS_DIR/${LANG}.md")"
+  fi
+done
+
+if [ -n "$DETECTED_LANGS" ]; then
+  echo "   ✓ 偵測語言:${DETECTED_LANGS}"
+else
+  echo "   ✓ 使用通用 patterns"
+fi
+
+# 將 {{PATTERNS}} 替換為實際 patterns
 PROMPT_TEMPLATE=$(cat "$PROMPT_FILE")
+PROMPT_TEMPLATE="${PROMPT_TEMPLATE//\{\{PATTERNS\}\}/$PATTERNS_CONTENT}"
+
 PROMPT_TMPFILE=$(mktemp)
 cat > "$PROMPT_TMPFILE" <<EOF
 ${PROMPT_TEMPLATE}
@@ -249,7 +285,7 @@ if [ "$BUG_COUNT" -gt 0 ]; then
     bash "$SCRIPT_DIR/verify-bug.command" "$SCRIPT_DIR/$FILENAME"
     exit 0
   else
-    echo "💡 稍後可執行: ./verify-bug.command ${FILENAME}"
+    echo "💡 稍後可執行: ./verify-bug.command $FILENAME"
   fi
 else
   echo ""

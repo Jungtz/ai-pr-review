@@ -7,7 +7,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-PROMPT_FILE="$SCRIPT_DIR/verify-bug.md"
+PROMPT_FILE="$SCRIPT_DIR/prompts/verify-bug.md"
 TOTAL_START=$SECONDS
 
 # Strip ANSI escape codes
