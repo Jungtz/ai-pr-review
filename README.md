@@ -28,6 +28,9 @@ ai-pr-review/
 ├── verify-bug.bat       # Windows BUG 驗證
 ├── evolve.command       # macOS Pattern 進化
 ├── evolve.bat           # Windows Pattern 進化
+├── lib/
+│   ├── api-helper.sh      # 共用 API 函式（bash）
+│   └── api-helper.ps1     # 共用 API 函式（Windows PowerShell）
 ├── prompts/
 │   ├── review-pr.md     # Review prompt 模板（含 {{PATTERNS}} 佔位符）
 │   ├── verify-bug.md    # 驗證 prompt 模板

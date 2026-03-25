@@ -6,9 +6,12 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+source "$SCRIPT_DIR/lib/api-helper.sh"
+
 PROMPT_FILE="$SCRIPT_DIR/prompts/evolve.md"
 PATTERNS_DIR="$SCRIPT_DIR/patterns"
 RESULTS_DIR="$SCRIPT_DIR/results"
+API_CONFIG="$SCRIPT_DIR/.api-config"
 TOTAL_START=$SECONDS
 
 # Timer helper
@@ -67,14 +70,24 @@ echo "   ✓ ${REVIEW_COUNT} 份 review 報告, ${VERIFY_COUNT} 份驗證報告 
 echo ""
 
 # 選擇 AI 引擎
-ENGINE_LABELS=("" "Claude Opus" "opencode")
+ENGINE_LABELS=("" "Claude Opus" "opencode" "")
 echo "🤖 選擇分析引擎（建議使用較強模型，需跨報告歸納分析）："
 echo "  [1] Claude Opus（預設）"
 echo "  [2] opencode"
+echo "  [3] OpenAI 相容 API（Ollama / OpenRouter / 其他）"
 echo ""
-read -r -p "選擇 [1/2]（直接 Enter 為 1）: " ENGINE_CHOICE
+read -r -p "選擇 [1/2/3]（直接 Enter 為 1）: " ENGINE_CHOICE
 ENGINE_CHOICE=${ENGINE_CHOICE:-1}
-echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}"
+
+if [ "$ENGINE_CHOICE" = "3" ]; then
+  echo ""
+  prompt_api_settings "$API_CONFIG"
+fi
+
+case "$ENGINE_CHOICE" in
+  3) echo "   → 使用: API (${API_MODEL} @ ${API_BASE})" ;;
+  *) echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
+esac
 echo ""
 
 # Step 2: 組合 prompt
@@ -154,6 +167,9 @@ if [ "$ENGINE_CHOICE" = "2" ]; then
   spin $!
   jq -r 'select(.type=="text") | .part.text // empty' "$RAW_FILE" > "$TMPFILE"
   jq -r 'select(.type=="step_finish") | .part' "$RAW_FILE" | jq -s 'last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}' > "$USAGE_FILE" 2>/dev/null
+elif [ "$ENGINE_CHOICE" = "3" ]; then
+  run_api "$API_BASE" "$API_KEY" "$API_MODEL" "$PROMPT_TMPFILE" "$TMPFILE" &
+  spin $!
 else
   echo "$( cat "$PROMPT_TMPFILE" )" | claude -p --model opus --output-format json > "$RAW_FILE" &
   spin $!
@@ -163,6 +179,7 @@ fi
 rm -f "$RAW_FILE" "$PROMPT_TMPFILE"
 
 # 讀取 token 用量
+USAGE_FILE="${TMPFILE}.usage"
 INPUT_TOKENS=$(jq -r '.input_tokens // 0' "$USAGE_FILE" 2>/dev/null)
 OUTPUT_TOKENS=$(jq -r '.output_tokens // 0' "$USAGE_FILE" 2>/dev/null)
 COST_USD=$(jq -r '.cost_usd // 0' "$USAGE_FILE" 2>/dev/null)
@@ -183,7 +200,10 @@ OUTPUT_FILE="$RESULTS_DIR/evolve_${TIMESTAMP}.md"
 {
   cat "$TMPFILE"
   printf "\n---\n"
-  ENGINE_NAME="${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}"
+  case "$ENGINE_CHOICE" in
+    3) ENGINE_NAME="API (${API_MODEL})" ;;
+    *) ENGINE_NAME="${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
+  esac
   printf "Model: %s | Total: %02d:%02d | Tokens: %d in / %d out | Cost: \$%.4f\n" "$ENGINE_NAME" "$TOTAL_MIN" "$TOTAL_SEC" "$INPUT_TOKENS" "$OUTPUT_TOKENS" "$COST_USD"
   printf "Reports analyzed: %d review + %d verify\n" "$REVIEW_COUNT" "$VERIFY_COUNT"
 } > "$OUTPUT_FILE"

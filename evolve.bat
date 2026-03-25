@@ -48,11 +48,39 @@ echo.
 echo 🤖 選擇分析引擎（建議使用較強模型，需跨報告歸納分析）：
 echo   [1] Claude Opus（預設）
 echo   [2] opencode
+echo   [3] OpenAI 相容 API（Ollama / OpenRouter / 其他）
 echo.
 set "ENGINE_CHOICE=1"
-set /p "ENGINE_CHOICE=選擇 [1/2]（直接 Enter 為 1）: "
+set /p "ENGINE_CHOICE=選擇 [1/2/3]（直接 Enter 為 1）: "
 if "%ENGINE_CHOICE%"=="1" set "ENGINE_NAME=Claude Opus"
 if "%ENGINE_CHOICE%"=="2" set "ENGINE_NAME=opencode"
+if "%ENGINE_CHOICE%"=="3" (
+    echo.
+    set "API_CONFIG=%SCRIPT_DIR%\.api-config"
+    set "CACHED_BASE=http://localhost:11434/v1"
+    set "CACHED_KEY="
+    set "CACHED_MODEL=llama3"
+    if exist "!API_CONFIG!" (
+        for /f "usebackq tokens=1,* delims==" %%a in ("!API_CONFIG!") do (
+            if "%%a"=="API_BASE" set "CACHED_BASE=%%b"
+            if "%%a"=="API_KEY" set "CACHED_KEY=%%b"
+            if "%%a"=="API_MODEL" set "CACHED_MODEL=%%b"
+        )
+    )
+    for /f "delims=" %%m in ('powershell -NoProfile -File "%SCRIPT_DIR%\lib\api-helper.ps1" -Action mask-key -ApiKey "!CACHED_KEY!"') do set "MASKED_KEY=%%m"
+    set "API_BASE=!CACHED_BASE!"
+    set /p "API_BASE=API Base URL [!CACHED_BASE!]: "
+    set "API_KEY=!CACHED_KEY!"
+    set /p "API_KEY=API Key [!MASKED_KEY!]: "
+    set "API_MODEL=!CACHED_MODEL!"
+    set /p "API_MODEL=Model 名稱 [!CACHED_MODEL!]: "
+    (
+        echo API_BASE=!API_BASE!
+        echo API_KEY=!API_KEY!
+        echo API_MODEL=!API_MODEL!
+    ) > "!API_CONFIG!"
+    set "ENGINE_NAME=API (!API_MODEL!)"
+)
 echo    → 使用: %ENGINE_NAME%
 echo.
 
@@ -106,6 +134,17 @@ if "%ENGINE_CHOICE%"=="2" (
     jq -r "select(.type==\"step_finish\") | .part" "%AI_RAW%" > "%AI_RAW%.parts" 2>nul
     jq -s "last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}" "%AI_RAW%.parts" > "%AI_USAGE%" 2>nul
     del /f "%AI_RAW%.parts" >nul 2>&1
+) else if "%ENGINE_CHOICE%"=="3" (
+    powershell -NoProfile -File "%SCRIPT_DIR%\lib\api-helper.ps1" -Action call -ApiBase "!API_BASE!" -ApiKey "!API_KEY!" -Model "!API_MODEL!" -PromptFile "%PROMPT_TMPFILE%" -OutputFile "%AI_TMPFILE%"
+    if errorlevel 1 (
+        echo ❌ API 呼叫失敗
+        type "%AI_TMPFILE%"
+    )
+    if exist "%AI_TMPFILE%.usage" (
+        copy /y "%AI_TMPFILE%.usage" "%AI_USAGE%" >nul 2>&1
+    ) else (
+        echo {} > "%AI_USAGE%"
+    )
 ) else (
     type "%PROMPT_TMPFILE%" | claude -p --model opus --output-format json > "%AI_RAW%"
     jq -r ".result // empty" "%AI_RAW%" > "%AI_TMPFILE%"

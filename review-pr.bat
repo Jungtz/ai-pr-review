@@ -72,10 +72,12 @@ if "%ENGINE_CHOICE%"=="4" (
             if "%%a"=="API_MODEL" set "CACHED_MODEL=%%b"
         )
     )
+    :: 遮罩 API Key 顯示
+    for /f "delims=" %%m in ('powershell -NoProfile -File "%SCRIPT_DIR%\lib\api-helper.ps1" -Action mask-key -ApiKey "!CACHED_KEY!"') do set "MASKED_KEY=%%m"
     set "API_BASE=!CACHED_BASE!"
     set /p "API_BASE=API Base URL [!CACHED_BASE!]: "
     set "API_KEY=!CACHED_KEY!"
-    set /p "API_KEY=API Key [!CACHED_KEY!]: "
+    set /p "API_KEY=API Key [!MASKED_KEY!]: "
     set "API_MODEL=!CACHED_MODEL!"
     set /p "API_MODEL=Model 名稱 [!CACHED_MODEL!]: "
     :: 寫入快取
@@ -239,16 +241,16 @@ if "%ENGINE_CHOICE%"=="1" (
     del /f "%AI_RAW%" >nul 2>&1
     del /f "%AI_RAW%.parts" >nul 2>&1
 ) else if "%ENGINE_CHOICE%"=="4" (
-    powershell -NoProfile -Command ^
-        "$prompt = Get-Content -Raw '%PROMPT_TMPFILE%';" ^
-        "$body = @{model='!API_MODEL!'; messages=@(@{role='user'; content=$prompt})} | ConvertTo-Json -Depth 5 -Compress;" ^
-        "$headers = @{'Content-Type'='application/json'};" ^
-        "$key = '!API_KEY!';" ^
-        "if ($key) { $headers['Authorization'] = 'Bearer ' + $key };" ^
-        "$r = Invoke-RestMethod -Uri '!API_BASE!/chat/completions' -Method Post -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 600;" ^
-        "$r.choices[0].message.content | Out-File -Encoding utf8 '%AI_TMPFILE%' -NoNewline;" ^
-        "$u = @{input_tokens=$r.usage.prompt_tokens; output_tokens=$r.usage.completion_tokens; cache_creation=0; cache_read=0; cost_usd=0} | ConvertTo-Json;" ^
-        "$u | Out-File -Encoding utf8 '%AI_USAGE%' -NoNewline"
+    powershell -NoProfile -File "%SCRIPT_DIR%\lib\api-helper.ps1" -Action call -ApiBase "!API_BASE!" -ApiKey "!API_KEY!" -Model "!API_MODEL!" -PromptFile "%PROMPT_TMPFILE%" -OutputFile "%AI_TMPFILE%"
+    if errorlevel 1 (
+        echo ❌ API 呼叫失敗
+        type "%AI_TMPFILE%"
+    )
+    if exist "%AI_TMPFILE%.usage" (
+        copy /y "%AI_TMPFILE%.usage" "%AI_USAGE%" >nul 2>&1
+    ) else (
+        echo {} > "%AI_USAGE%"
+    )
 ) else (
     type "%PROMPT_TMPFILE%" | %ENGINE_CHOICE% > "%AI_TMPFILE%"
     echo {} > "%AI_USAGE%"

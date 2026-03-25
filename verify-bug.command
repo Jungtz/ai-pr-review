@@ -7,7 +7,10 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+source "$SCRIPT_DIR/lib/api-helper.sh"
+
 PROMPT_FILE="$SCRIPT_DIR/prompts/verify-bug.md"
+API_CONFIG="$SCRIPT_DIR/.api-config"
 TOTAL_START=$SECONDS
 
 # Strip ANSI escape codes
@@ -16,7 +19,6 @@ strip_ansi() {
 }
 
 # Run AI verification in project directory
-# Outputs: result text to $output_file, usage JSON to ${output_file}.usage
 run_verify() {
   local engine=$1
   local prompt_file=$2
@@ -27,7 +29,6 @@ run_verify() {
   case "$engine" in
     1)
       (cd "$project_dir" && claude -p --model opus --output-format json < "$prompt_file" > "$raw_file")
-      # 提取 result 文字和 usage 資訊
       jq -r '.result // empty' "$raw_file" > "$output_file"
       jq '{input_tokens: .usage.input_tokens, output_tokens: .usage.output_tokens, cache_creation: .usage.cache_creation_input_tokens, cache_read: .usage.cache_read_input_tokens, cost_usd: .total_cost_usd}' "$raw_file" > "${output_file}.usage" 2>/dev/null
       rm -f "$raw_file"
@@ -36,31 +37,12 @@ run_verify() {
       local prompt_content
       prompt_content=$(cat "$prompt_file")
       (cd "$project_dir" && opencode run --format json "$prompt_content" > "$raw_file" 2>/dev/null)
-      # 提取文字內容（type=text 的 part.text）
       jq -r 'select(.type=="text") | .part.text // empty' "$raw_file" > "$output_file"
-      # 提取 token 用量（type=step_finish 的最後一筆）
       jq -r 'select(.type=="step_finish") | .part' "$raw_file" | jq -s 'last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}' > "${output_file}.usage" 2>/dev/null
       rm -f "$raw_file"
       ;;
-    3:*)
-      local api_info="${engine#3:}"
-      local model="${api_info%%|*}"
-      local rest="${api_info#*|}"
-      local api_base="${rest%%|*}"
-      local api_key="${rest#*|}"
-      local api_url="${api_base}/chat/completions"
-      jq -Rs --arg model "$model" '{model: $model, messages: [{role: "user", content: .}]}' "$prompt_file" > "${raw_file}.req"
-      local auth_header=""
-      if [ -n "$api_key" ]; then
-        auth_header="-H \"Authorization: Bearer ${api_key}\""
-      fi
-      eval curl -s "$api_url" \
-        -H '"Content-Type: application/json"' \
-        $auth_header \
-        -d @"${raw_file}.req" > "$raw_file"
-      jq -r '.choices[0].message.content // empty' "$raw_file" > "$output_file"
-      jq '{input_tokens: .usage.prompt_tokens, output_tokens: .usage.completion_tokens, cache_creation: 0, cache_read: 0, cost_usd: 0}' "$raw_file" > "${output_file}.usage" 2>/dev/null
-      rm -f "$raw_file" "${raw_file}.req"
+    3)
+      (cd "$project_dir" && run_api "$API_BASE" "$API_KEY" "$API_MODEL" "$prompt_file" "$output_file")
       ;;
   esac
 }
@@ -156,7 +138,7 @@ echo "   → 專案: ${PROJECT_DIR}"
 
 # 選擇 AI 引擎（若從 review-pr 傳入 API 設定則自動沿用）
 if [ "$PR_REVIEW_ENGINE" = "api" ] && [ -n "$API_BASE" ] && [ -n "$API_MODEL" ]; then
-  ENGINE_CHOICE="3:${API_MODEL}|${API_BASE}|${API_KEY}"
+  ENGINE_CHOICE=3
   echo ""
   echo "🤖 沿用 review 引擎: API (${API_MODEL} @ ${API_BASE})"
 else
@@ -171,37 +153,12 @@ else
 
   if [ "$ENGINE_CHOICE" = "3" ]; then
     echo ""
-    # 讀取快取設定作為預設值
-    API_CONFIG="$SCRIPT_DIR/.api-config"
-    CACHED_BASE="" ; CACHED_KEY="" ; CACHED_MODEL=""
-    if [ -f "$API_CONFIG" ]; then
-      CACHED_BASE=$(grep '^API_BASE=' "$API_CONFIG" | cut -d= -f2-)
-      CACHED_KEY=$(grep '^API_KEY=' "$API_CONFIG" | cut -d= -f2-)
-      CACHED_MODEL=$(grep '^API_MODEL=' "$API_CONFIG" | cut -d= -f2-)
-    fi
-    CACHED_BASE=${CACHED_BASE:-http://localhost:11434/v1}
-    CACHED_MODEL=${CACHED_MODEL:-llama3}
-
-    read -r -p "API Base URL [${CACHED_BASE}]: " API_BASE
-    API_BASE=${API_BASE:-$CACHED_BASE}
-    read -r -p "API Key [${CACHED_KEY:-(none)}]: " API_KEY
-    API_KEY=${API_KEY:-$CACHED_KEY}
-    read -r -p "Model 名稱 [${CACHED_MODEL}]: " API_MODEL
-    API_MODEL=${API_MODEL:-$CACHED_MODEL}
-
-    # 寫入快取
-    cat > "$API_CONFIG" <<EOF
-API_BASE=${API_BASE}
-API_KEY=${API_KEY}
-API_MODEL=${API_MODEL}
-EOF
-
-    ENGINE_CHOICE="3:${API_MODEL}|${API_BASE}|${API_KEY}"
+    prompt_api_settings "$API_CONFIG"
   fi
 fi
 
 case "$ENGINE_CHOICE" in
-  3:*) echo "   → 使用: API (${API_MODEL} @ ${API_BASE})" ;;
+  3) echo "   → 使用: API (${API_MODEL} @ ${API_BASE})" ;;
   *) echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
 esac
 
@@ -383,7 +340,7 @@ TOTAL_SEC=$(( TOTAL_ELAPSED % 60 ))
   echo ""
   echo "---"
   case "$ENGINE_CHOICE" in
-    3:*) ENGINE_NAME="API (${ENGINE_CHOICE#3:})" ;;
+    3) ENGINE_NAME="API (${API_MODEL})" ;;
     *) ENGINE_NAME="${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
   esac
   printf "Model: %s | Total: %02d:%02d | Tokens: %d in / %d out | Cost: \$%.4f\n" "$ENGINE_NAME" "$TOTAL_MIN" "$TOTAL_SEC" "$TOTAL_INPUT_TOKENS" "$TOTAL_OUTPUT_TOKENS" "$TOTAL_COST_USD"

@@ -3,7 +3,10 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+source "$SCRIPT_DIR/lib/api-helper.sh"
+
 PROMPT_FILE="$SCRIPT_DIR/prompts/review-pr.md"
+API_CONFIG="$SCRIPT_DIR/.api-config"
 TOTAL_START=$SECONDS
 
 # Timer helper: prints elapsed seconds for a step
@@ -58,33 +61,12 @@ run_ai() {
       ;;
     3)
       opencode run --format json "$prompt_content" > "$raw_file" 2>/dev/null
-      # 提取文字內容
       jq -r 'select(.type=="text") | .part.text // empty' "$raw_file" > "$output_file"
-      # 提取 token 用量
       jq -r 'select(.type=="step_finish") | .part' "$raw_file" | jq -s 'last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}' > "${output_file}.usage" 2>/dev/null
       rm -f "$raw_file"
       ;;
-    4:*)
-      local api_info="${engine#4:}"
-      local model="${api_info%%|*}"
-      local rest="${api_info#*|}"
-      local api_base="${rest%%|*}"
-      local api_key="${rest#*|}"
-      local api_url="${api_base}/chat/completions"
-      # 用 jq 安全建構 JSON payload
-      jq -Rs --arg model "$model" '{model: $model, messages: [{role: "user", content: .}]}' "$prompt_file" > "${raw_file}.req"
-      local auth_header=""
-      if [ -n "$api_key" ]; then
-        auth_header="-H \"Authorization: Bearer ${api_key}\""
-      fi
-      eval curl -s "$api_url" \
-        -H '"Content-Type: application/json"' \
-        $auth_header \
-        -d @"${raw_file}.req" > "$raw_file"
-      jq -r '.choices[0].message.content // empty' "$raw_file" > "$output_file"
-      # 提取 token 用量
-      jq '{input_tokens: .usage.prompt_tokens, output_tokens: .usage.completion_tokens, cache_creation: 0, cache_read: 0, cost_usd: 0}' "$raw_file" > "${output_file}.usage" 2>/dev/null
-      rm -f "$raw_file" "${raw_file}.req"
+    4)
+      run_api "$API_BASE" "$API_KEY" "$API_MODEL" "$prompt_file" "$output_file"
       ;;
     *) eval "$engine" < "$prompt_file" > "$output_file"; echo '{}' > "${output_file}.usage" ;;
   esac
@@ -128,32 +110,8 @@ ENGINE_CHOICE=${ENGINE_CHOICE:-1}
 
 if [ "$ENGINE_CHOICE" = "4" ]; then
   echo ""
-  # 讀取快取設定作為預設值
-  API_CONFIG="$SCRIPT_DIR/.api-config"
-  CACHED_BASE="" ; CACHED_KEY="" ; CACHED_MODEL=""
-  if [ -f "$API_CONFIG" ]; then
-    CACHED_BASE=$(grep '^API_BASE=' "$API_CONFIG" | cut -d= -f2-)
-    CACHED_KEY=$(grep '^API_KEY=' "$API_CONFIG" | cut -d= -f2-)
-    CACHED_MODEL=$(grep '^API_MODEL=' "$API_CONFIG" | cut -d= -f2-)
-  fi
-  CACHED_BASE=${CACHED_BASE:-http://localhost:11434/v1}
-  CACHED_MODEL=${CACHED_MODEL:-llama3}
-
-  read -r -p "API Base URL [${CACHED_BASE}]: " API_BASE
-  API_BASE=${API_BASE:-$CACHED_BASE}
-  read -r -p "API Key [${CACHED_KEY:-(none)}]: " API_KEY
-  API_KEY=${API_KEY:-$CACHED_KEY}
-  read -r -p "Model 名稱 [${CACHED_MODEL}]: " API_MODEL
-  API_MODEL=${API_MODEL:-$CACHED_MODEL}
-
-  # 寫入快取
-  cat > "$API_CONFIG" <<EOF
-API_BASE=${API_BASE}
-API_KEY=${API_KEY}
-API_MODEL=${API_MODEL}
-EOF
-
-  ENGINE_CHOICE="4:${API_MODEL}|${API_BASE}|${API_KEY}"
+  prompt_api_settings "$API_CONFIG"
+  ENGINE_LABELS[4]="API (${API_MODEL})"
 fi
 
 if [ "$ENGINE_CHOICE" = "5" ]; then
@@ -164,7 +122,7 @@ if [ "$ENGINE_CHOICE" = "5" ]; then
 fi
 
 case "$ENGINE_CHOICE" in
-  4:*) echo "   → 使用: API (${API_MODEL} @ ${API_BASE})" ;;
+  4) echo "   → 使用: API (${API_MODEL} @ ${API_BASE})" ;;
   *) echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
 esac
 
@@ -299,7 +257,7 @@ COST_USD=${COST_USD:-0}
 rm -f "$USAGE_FILE"
 
 case "$ENGINE_CHOICE" in
-  4:*) ENGINE_NAME="API (${ENGINE_CHOICE#4:})" ;;
+  4) ENGINE_NAME="API (${API_MODEL})" ;;
   *) ENGINE_NAME="${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
 esac
 
@@ -342,12 +300,10 @@ if [ "$BUG_COUNT" -gt 0 ]; then
   VERIFY=${VERIFY:-N}
   if [[ "$VERIFY" =~ ^[Yy]$ ]]; then
     # 若使用 API 引擎，傳遞設定給 verify-bug
-    case "$ENGINE_CHOICE" in
-      4:*)
-        export PR_REVIEW_ENGINE=api
-        export API_BASE API_KEY API_MODEL
-        ;;
-    esac
+    if [ "$ENGINE_CHOICE" = "4" ]; then
+      export PR_REVIEW_ENGINE=api
+      export API_BASE API_KEY API_MODEL
+    fi
     bash "$SCRIPT_DIR/verify-bug.command" "$SCRIPT_DIR/$FILENAME"
     exit 0
   else
