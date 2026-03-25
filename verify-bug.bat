@@ -87,8 +87,16 @@ popd
 echo    → 專案: %PROJECT_DIR%
 
 :: ============================================================
-:: 選擇 AI 引擎
+:: 選擇 AI 引擎（若從 review-pr 傳入則自動選擇）
 :: ============================================================
+if "%PR_REVIEW_ENGINE%"=="api" if defined API_BASE if defined API_MODEL (
+    set "ENGINE_CHOICE=3"
+    set "ENGINE_NAME=API (!API_MODEL!)"
+    echo.
+    echo 🤖 沿用 review 引擎: !ENGINE_NAME!
+    goto :engine_selected
+)
+
 echo.
 echo 🤖 選擇驗證引擎：
 echo   [1] Claude Opus（預設）
@@ -102,14 +110,34 @@ if "%ENGINE_CHOICE%"=="1" set "ENGINE_NAME=Claude Opus"
 if "%ENGINE_CHOICE%"=="2" set "ENGINE_NAME=opencode"
 if "%ENGINE_CHOICE%"=="3" (
     echo.
-    set "API_BASE=http://localhost:11434/v1"
-    set /p "API_BASE=API Base URL（如 http://localhost:11434/v1）: "
-    set "API_KEY="
-    set /p "API_KEY=API Key（無則直接 Enter）: "
-    set "API_MODEL=llama3"
-    set /p "API_MODEL=Model 名稱: "
+    :: 讀取快取設定作為預設值
+    set "API_CONFIG=%SCRIPT_DIR%\.api-config"
+    set "CACHED_BASE=http://localhost:11434/v1"
+    set "CACHED_KEY="
+    set "CACHED_MODEL=llama3"
+    if exist "!API_CONFIG!" (
+        for /f "usebackq tokens=1,* delims==" %%a in ("!API_CONFIG!") do (
+            if "%%a"=="API_BASE" set "CACHED_BASE=%%b"
+            if "%%a"=="API_KEY" set "CACHED_KEY=%%b"
+            if "%%a"=="API_MODEL" set "CACHED_MODEL=%%b"
+        )
+    )
+    set "API_BASE=!CACHED_BASE!"
+    set /p "API_BASE=API Base URL [!CACHED_BASE!]: "
+    set "API_KEY=!CACHED_KEY!"
+    set /p "API_KEY=API Key [!CACHED_KEY!]: "
+    set "API_MODEL=!CACHED_MODEL!"
+    set /p "API_MODEL=Model 名稱 [!CACHED_MODEL!]: "
+    :: 寫入快取
+    (
+        echo API_BASE=!API_BASE!
+        echo API_KEY=!API_KEY!
+        echo API_MODEL=!API_MODEL!
+    ) > "!API_CONFIG!"
     set "ENGINE_NAME=API (!API_MODEL!)"
 )
+
+:engine_selected
 echo    → 使用: %ENGINE_NAME%
 
 echo.

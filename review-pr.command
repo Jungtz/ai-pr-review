@@ -128,11 +128,31 @@ ENGINE_CHOICE=${ENGINE_CHOICE:-1}
 
 if [ "$ENGINE_CHOICE" = "4" ]; then
   echo ""
-  read -r -p "API Base URL（如 http://localhost:11434/v1）: " API_BASE
-  API_BASE=${API_BASE:-http://localhost:11434/v1}
-  read -r -p "API Key（無則直接 Enter）: " API_KEY
-  read -r -p "Model 名稱: " API_MODEL
-  API_MODEL=${API_MODEL:-llama3}
+  # 讀取快取設定作為預設值
+  API_CONFIG="$SCRIPT_DIR/.api-config"
+  CACHED_BASE="" ; CACHED_KEY="" ; CACHED_MODEL=""
+  if [ -f "$API_CONFIG" ]; then
+    CACHED_BASE=$(grep '^API_BASE=' "$API_CONFIG" | cut -d= -f2-)
+    CACHED_KEY=$(grep '^API_KEY=' "$API_CONFIG" | cut -d= -f2-)
+    CACHED_MODEL=$(grep '^API_MODEL=' "$API_CONFIG" | cut -d= -f2-)
+  fi
+  CACHED_BASE=${CACHED_BASE:-http://localhost:11434/v1}
+  CACHED_MODEL=${CACHED_MODEL:-llama3}
+
+  read -r -p "API Base URL [${CACHED_BASE}]: " API_BASE
+  API_BASE=${API_BASE:-$CACHED_BASE}
+  read -r -p "API Key [${CACHED_KEY:-(none)}]: " API_KEY
+  API_KEY=${API_KEY:-$CACHED_KEY}
+  read -r -p "Model 名稱 [${CACHED_MODEL}]: " API_MODEL
+  API_MODEL=${API_MODEL:-$CACHED_MODEL}
+
+  # 寫入快取
+  cat > "$API_CONFIG" <<EOF
+API_BASE=${API_BASE}
+API_KEY=${API_KEY}
+API_MODEL=${API_MODEL}
+EOF
+
   ENGINE_CHOICE="4:${API_MODEL}|${API_BASE}|${API_KEY}"
 fi
 
@@ -321,6 +341,13 @@ if [ "$BUG_COUNT" -gt 0 ]; then
   read -r -p "是否進行深度驗證？ [y/N]: " VERIFY
   VERIFY=${VERIFY:-N}
   if [[ "$VERIFY" =~ ^[Yy]$ ]]; then
+    # 若使用 API 引擎，傳遞設定給 verify-bug
+    case "$ENGINE_CHOICE" in
+      4:*)
+        export PR_REVIEW_ENGINE=api
+        export API_BASE API_KEY API_MODEL
+        ;;
+    esac
     bash "$SCRIPT_DIR/verify-bug.command" "$SCRIPT_DIR/$FILENAME"
     exit 0
   else

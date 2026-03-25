@@ -60,12 +60,30 @@ set /p "ENGINE_CHOICE=選擇 [1/2/3/4/5]（直接 Enter 為 1）: "
 
 if "%ENGINE_CHOICE%"=="4" (
     echo.
-    set "API_BASE=http://localhost:11434/v1"
-    set /p "API_BASE=API Base URL（如 http://localhost:11434/v1）: "
-    set "API_KEY="
-    set /p "API_KEY=API Key（無則直接 Enter）: "
-    set "API_MODEL=llama3"
-    set /p "API_MODEL=Model 名稱: "
+    :: 讀取快取設定作為預設值
+    set "API_CONFIG=%SCRIPT_DIR%\.api-config"
+    set "CACHED_BASE=http://localhost:11434/v1"
+    set "CACHED_KEY="
+    set "CACHED_MODEL=llama3"
+    if exist "!API_CONFIG!" (
+        for /f "usebackq tokens=1,* delims==" %%a in ("!API_CONFIG!") do (
+            if "%%a"=="API_BASE" set "CACHED_BASE=%%b"
+            if "%%a"=="API_KEY" set "CACHED_KEY=%%b"
+            if "%%a"=="API_MODEL" set "CACHED_MODEL=%%b"
+        )
+    )
+    set "API_BASE=!CACHED_BASE!"
+    set /p "API_BASE=API Base URL [!CACHED_BASE!]: "
+    set "API_KEY=!CACHED_KEY!"
+    set /p "API_KEY=API Key [!CACHED_KEY!]: "
+    set "API_MODEL=!CACHED_MODEL!"
+    set /p "API_MODEL=Model 名稱 [!CACHED_MODEL!]: "
+    :: 寫入快取
+    (
+        echo API_BASE=!API_BASE!
+        echo API_KEY=!API_KEY!
+        echo API_MODEL=!API_MODEL!
+    ) > "!API_CONFIG!"
 )
 
 if "%ENGINE_CHOICE%"=="5" (
@@ -307,6 +325,8 @@ if %BUG_COUNT% gtr 0 (
     set "VERIFY=N"
     set /p "VERIFY=是否進行深度驗證？ [y/N]: "
     if /i "!VERIFY!"=="y" (
+        :: 若使用 API 引擎，傳遞設定給 verify-bug
+        if "%ENGINE_CHOICE%"=="4" set "PR_REVIEW_ENGINE=api"
         call "%SCRIPT_DIR%\verify-bug.bat" "%OUTPUT_PATH%"
         exit /b 0
     ) else (
