@@ -109,6 +109,9 @@ echo    → 使用: %ENGINE_NAME%
 for /f %%a in ('powershell -NoProfile -Command "Get-Date -Format 'yyMMddHHmmss'"') do set "TIMESTAMP=%%a"
 set "FILENAME=results\PR_%PR_NUMBER%_%TIMESTAMP%.md"
 
+:: Step 3.1: 建立 results 目錄
+if not exist "%SCRIPT_DIR%\results" mkdir "%SCRIPT_DIR%\results"
+
 echo.
 echo 📄 輸出方式：
 echo   [1] 儲存為 %FILENAME%（預設）

@@ -230,6 +230,7 @@ echo "🤖 [2/2] AI 深度驗證..."
 echo ""
 
 VERIFY_FILENAME="${REPORT_FILE%.md}_verify.md"
+mkdir -p "$(dirname "$VERIFY_FILENAME")"
 {
   echo "## 🔍 BUG 驗證報告"
   echo ""

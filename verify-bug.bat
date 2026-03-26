@@ -221,6 +221,7 @@ echo.
 for %%f in ("%REPORT_FILE%") do set "REPORT_BASENAME=%%~nf"
 set "VERIFY_FILENAME=%REPORT_BASENAME%_verify.md"
 for %%f in ("%REPORT_FILE%") do set "REPORT_DIR=%%~dpf"
+if not exist "%REPORT_DIR%" mkdir "%REPORT_DIR%"
 set "VERIFY_PATH=%REPORT_DIR%%VERIFY_FILENAME%"
 
 :: 寫入報告頭
