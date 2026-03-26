@@ -130,6 +130,9 @@ esac
 TIMESTAMP=$(date +%y%m%d%H%M%S)
 FILENAME="results/PR_${PR_NUMBER}_${TIMESTAMP}.md"
 
+# Step 3.1: 建立 results 目錄
+mkdir -p "$SCRIPT_DIR/results"
+
 echo ""
 echo "📄 輸出方式："
 echo "  [1] 儲存為 ${FILENAME}（預設）"
