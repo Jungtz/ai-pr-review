@@ -3,40 +3,12 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/api-helper.sh"
 
 PROMPT_FILE="$SCRIPT_DIR/prompts/review-pr.md"
 API_CONFIG="$SCRIPT_DIR/.api-config"
 TOTAL_START=$SECONDS
-
-# Timer helper: prints elapsed seconds for a step
-step_time() {
-  local start=$1
-  local elapsed=$(( SECONDS - start ))
-  echo "(${elapsed}s)"
-}
-
-# Spinner function
-spin() {
-  local pid=$1
-  local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-  local i=0
-  local start=$SECONDS
-  while kill -0 "$pid" 2>/dev/null; do
-    local elapsed=$(( SECONDS - start ))
-    local min=$(( elapsed / 60 ))
-    local sec=$(( elapsed % 60 ))
-    printf "\r   ⏳ 分析中 ${chars:i++%${#chars}:1} %02d:%02d " "$min" "$sec"
-    sleep 0.1
-  done
-  local elapsed=$(( SECONDS - start ))
-  printf "\r   ✓ 分析完成 (${elapsed}s)              \n"
-}
-
-# Run AI command based on engine choice
-strip_ansi() {
-  sed $'s/\x1b\[[0-9;]*[a-zA-Z]//g' | sed $'s/\x1b\[[0-9;]*m//g'
-}
 
 run_ai() {
   local engine=$1
@@ -241,7 +213,7 @@ echo "🤖 [4/4] AI 分析中..."
 TMPFILE=$(mktemp)
 
 run_ai "$ENGINE_CHOICE" "$PROMPT_TMPFILE" "$TMPFILE" &
-spin $!
+spin $! "分析中"
 rm -f "$PROMPT_TMPFILE"
 
 # 總耗時

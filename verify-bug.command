@@ -7,16 +7,12 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/api-helper.sh"
 
 PROMPT_FILE="$SCRIPT_DIR/prompts/verify-bug.md"
 API_CONFIG="$SCRIPT_DIR/.api-config"
 TOTAL_START=$SECONDS
-
-# Strip ANSI escape codes
-strip_ansi() {
-  sed $'s/\x1b\[[0-9;]*[a-zA-Z]//g' | sed $'s/\x1b\[[0-9;]*m//g' | sed $'s/\r//g; s/\x04//g; s/\x08//g'
-}
 
 # Run AI verification in project directory
 run_verify() {
@@ -48,31 +44,6 @@ run_verify() {
 }
 
 ENGINE_LABELS=("" "Claude Opus" "opencode" "")
-
-# Timer helper
-step_time() {
-  local start=$1
-  local elapsed=$(( SECONDS - start ))
-  echo "(${elapsed}s)"
-}
-
-# Spinner function
-spin() {
-  local pid=$1
-  local label=${2:-"驗證中"}
-  local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-  local i=0
-  local start=$SECONDS
-  while kill -0 "$pid" 2>/dev/null; do
-    local elapsed=$(( SECONDS - start ))
-    local min=$(( elapsed / 60 ))
-    local sec=$(( elapsed % 60 ))
-    printf "\r   ⏳ ${label} ${chars:i++%${#chars}:1} %02d:%02d " "$min" "$sec"
-    sleep 0.1
-  done
-  local elapsed=$(( SECONDS - start ))
-  printf "\r   ✓ 完成 (${elapsed}s)              \n"
-}
 
 # Step 1: 取得報告檔案
 REPORT_FILE="$1"

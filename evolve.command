@@ -6,6 +6,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/api-helper.sh"
 
 PROMPT_FILE="$SCRIPT_DIR/prompts/evolve.md"
@@ -13,35 +14,6 @@ PATTERNS_DIR="$SCRIPT_DIR/patterns"
 RESULTS_DIR="$SCRIPT_DIR/results"
 API_CONFIG="$SCRIPT_DIR/.api-config"
 TOTAL_START=$SECONDS
-
-# Timer helper
-step_time() {
-  local start=$1
-  local elapsed=$(( SECONDS - start ))
-  echo "(${elapsed}s)"
-}
-
-# Spinner function
-spin() {
-  local pid=$1
-  local chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-  local i=0
-  local start=$SECONDS
-  while kill -0 "$pid" 2>/dev/null; do
-    local elapsed=$(( SECONDS - start ))
-    local min=$(( elapsed / 60 ))
-    local sec=$(( elapsed % 60 ))
-    printf "\r   ⏳ 分析中 ${chars:i++%${#chars}:1} %02d:%02d " "$min" "$sec"
-    sleep 0.1
-  done
-  local elapsed=$(( SECONDS - start ))
-  printf "\r   ✓ 分析完成 (${elapsed}s)              \n"
-}
-
-# Strip ANSI
-strip_ansi() {
-  sed $'s/\x1b\[[0-9;]*[a-zA-Z]//g' | sed $'s/\x1b\[[0-9;]*m//g'
-}
 
 echo ""
 echo "🧬 Pattern Evolution"
@@ -164,15 +136,15 @@ USAGE_FILE="${TMPFILE}.usage"
 if [ "$ENGINE_CHOICE" = "2" ]; then
   PROMPT_CONTENT=$(cat "$PROMPT_TMPFILE")
   opencode run --format json "$PROMPT_CONTENT" > "$RAW_FILE" 2>/dev/null &
-  spin $!
+  spin $! "分析中"
   jq -r 'select(.type=="text") | .part.text // empty' "$RAW_FILE" > "$TMPFILE"
   jq -r 'select(.type=="step_finish") | .part' "$RAW_FILE" | jq -s 'last | {input_tokens: .tokens.input, output_tokens: .tokens.output, cache_creation: .tokens.cache.write, cache_read: .tokens.cache.read, cost_usd: .cost}' > "$USAGE_FILE" 2>/dev/null
 elif [ "$ENGINE_CHOICE" = "3" ]; then
   run_api "$API_BASE" "$API_KEY" "$API_MODEL" "$PROMPT_TMPFILE" "$TMPFILE" &
-  spin $!
+  spin $! "分析中"
 else
   echo "$( cat "$PROMPT_TMPFILE" )" | claude -p --model opus --output-format json > "$RAW_FILE" &
-  spin $!
+  spin $! "分析中"
   jq -r '.result // empty' "$RAW_FILE" > "$TMPFILE"
   jq '{input_tokens: .usage.input_tokens, output_tokens: .usage.output_tokens, cache_creation: .usage.cache_creation_input_tokens, cache_read: .usage.cache_read_input_tokens, cost_usd: .total_cost_usd}' "$RAW_FILE" > "$USAGE_FILE" 2>/dev/null
 fi
