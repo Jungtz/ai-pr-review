@@ -107,12 +107,28 @@ fi
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 echo "   → 專案: ${PROJECT_DIR}"
 
-# 選擇 AI 引擎（若從 review-pr 傳入 API 設定則自動沿用）
-if [ "$PR_REVIEW_ENGINE" = "api" ] && [ -n "$API_BASE" ] && [ -n "$API_MODEL" ]; then
-  ENGINE_CHOICE=3
-  echo ""
-  echo "🤖 沿用 review 引擎: API (${API_MODEL} @ ${API_BASE})"
-else
+# 選擇 AI 引擎（若從 review-pr 傳入則自動沿用）
+case "$PR_REVIEW_ENGINE" in
+  claude)
+    ENGINE_CHOICE=1
+    echo ""
+    echo "🤖 沿用 review 引擎: Claude Opus"
+    ;;
+  opencode)
+    ENGINE_CHOICE=2
+    echo ""
+    echo "🤖 沿用 review 引擎: opencode"
+    ;;
+  api)
+    if [ -n "$API_BASE" ] && [ -n "$API_MODEL" ]; then
+      ENGINE_CHOICE=3
+      echo ""
+      echo "🤖 沿用 review 引擎: API (${API_MODEL} @ ${API_BASE})"
+    fi
+    ;;
+esac
+
+if [ -z "$ENGINE_CHOICE" ]; then
   echo ""
   echo "🤖 選擇驗證引擎："
   echo "  [1] Claude Opus（預設）"

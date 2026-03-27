@@ -87,35 +87,48 @@ popd
 echo    → 專案: %PROJECT_DIR%
 
 :: ============================================================
-:: 選擇 AI 引擎（若從 review-pr 傳入則自動選擇）
+:: 選擇 AI 引擎（若從 review-pr 傳入則自動沿用）
 :: ============================================================
+set "ENGINE_CHOICE="
+
+if "%PR_REVIEW_ENGINE%"=="claude" (
+    set "ENGINE_CHOICE=1"
+    set "ENGINE_NAME=Claude Opus"
+    echo.
+    echo 🤖 沿用 review 引擎: Claude Opus
+)
+if "%PR_REVIEW_ENGINE%"=="opencode" (
+    set "ENGINE_CHOICE=2"
+    set "ENGINE_NAME=opencode"
+    echo.
+    echo 🤖 沿用 review 引擎: opencode
+)
 if "%PR_REVIEW_ENGINE%"=="api" if defined API_BASE if defined API_MODEL (
     set "ENGINE_CHOICE=3"
     set "ENGINE_NAME=API (!API_MODEL!)"
     echo.
     echo 🤖 沿用 review 引擎: !ENGINE_NAME!
-    goto :engine_selected
 )
 
-echo.
-echo 🤖 選擇驗證引擎：
-echo   [1] Claude Opus（預設）
-echo   [2] opencode
-echo   [3] OpenAI 相容 API（Ollama / OpenRouter / 其他）
-echo.
-set "ENGINE_CHOICE=1"
-set /p "ENGINE_CHOICE=選擇 [1/2/3]（直接 Enter 為 1）: "
-
-if "%ENGINE_CHOICE%"=="1" set "ENGINE_NAME=Claude Opus"
-if "%ENGINE_CHOICE%"=="2" set "ENGINE_NAME=opencode"
-if "%ENGINE_CHOICE%"=="3" (
+if not defined ENGINE_CHOICE (
     echo.
-    set "API_CONFIG=%SCRIPT_DIR%\.api-config"
-    call "%SCRIPT_DIR%\lib\common.bat" :prompt_api_settings
-    set "ENGINE_NAME=API (!API_MODEL!)"
-)
+    echo 🤖 選擇驗證引擎：
+    echo   [1] Claude Opus（預設）
+    echo   [2] opencode
+    echo   [3] OpenAI 相容 API（Ollama / OpenRouter / 其他）
+    echo.
+    set "ENGINE_CHOICE=1"
+    set /p "ENGINE_CHOICE=選擇 [1/2/3]（直接 Enter 為 1）: "
 
-:engine_selected
+    if "!ENGINE_CHOICE!"=="1" set "ENGINE_NAME=Claude Opus"
+    if "!ENGINE_CHOICE!"=="2" set "ENGINE_NAME=opencode"
+    if "!ENGINE_CHOICE!"=="3" (
+        echo.
+        set "API_CONFIG=%SCRIPT_DIR%\.api-config"
+        call "%SCRIPT_DIR%\lib\common.bat" :prompt_api_settings
+        set "ENGINE_NAME=API (!API_MODEL!)"
+    )
+)
 echo    → 使用: %ENGINE_NAME%
 
 echo.

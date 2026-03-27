@@ -45,22 +45,29 @@ if "%REPO%"=="" (
 )
 
 :: ============================================================
-:: Step 2: 選擇 AI 引擎
+:: Step 2: 選擇 AI 引擎（讀取快取作為預設值）
 :: ============================================================
+set "API_CONFIG=%SCRIPT_DIR%\.api-config"
+set "CACHED_ENGINE=1"
+if exist "%API_CONFIG%" (
+    for /f "usebackq tokens=1,* delims==" %%a in ("%API_CONFIG%") do (
+        if "%%a"=="ENGINE" set "CACHED_ENGINE=%%b"
+    )
+)
+
 echo.
 echo 🤖 選擇 AI 引擎：
-echo   [1] Claude Sonnet（預設，正式 review）
+echo   [1] Claude Sonnet（正式 review）
 echo   [2] Claude Opus（深度分析）
 echo   [3] opencode
 echo   [4] OpenAI 相容 API（Ollama / OpenRouter / 其他）
 echo   [5] 自訂指令
 echo.
-set "ENGINE_CHOICE=1"
-set /p "ENGINE_CHOICE=選擇 [1/2/3/4/5]（直接 Enter 為 1）: "
+set "ENGINE_CHOICE=!CACHED_ENGINE!"
+set /p "ENGINE_CHOICE=選擇 [1/2/3/4/5]（直接 Enter 為 !CACHED_ENGINE!）: "
 
 if "%ENGINE_CHOICE%"=="4" (
     echo.
-    set "API_CONFIG=%SCRIPT_DIR%\.api-config"
     call "%SCRIPT_DIR%\lib\common.bat" :prompt_api_settings
 )
 
@@ -79,34 +86,33 @@ if not "%ENGINE_CHOICE%"=="1" if not "%ENGINE_CHOICE%"=="2" if not "%ENGINE_CHOI
 
 echo    → 使用: %ENGINE_NAME%
 
-:: ============================================================
-:: Step 3: 選擇輸出方式
-:: ============================================================
+:: 快取引擎選擇
+powershell -NoProfile -Command ^
+    "$f = '%API_CONFIG%';" ^
+    "if (Test-Path $f) { $lines = Get-Content $f | Where-Object { $_ -notmatch '^ENGINE=' }; $lines += 'ENGINE=%ENGINE_CHOICE%'; $lines | Set-Content $f }" ^
+    "else { 'ENGINE=%ENGINE_CHOICE%' | Set-Content $f }"
+
 for /f %%a in ('powershell -NoProfile -Command "Get-Date -Format 'yyMMddHHmmss'"') do set "TIMESTAMP=%%a"
 set "FILENAME=results\PR_%PR_NUMBER%_%TIMESTAMP%.md"
-
-:: Step 3.1: 建立 results 目錄
 if not exist "%SCRIPT_DIR%\results" mkdir "%SCRIPT_DIR%\results"
-
-echo.
-echo 📄 輸出方式：
-echo   [1] 儲存為 %FILENAME%（預設）
-echo   [2] 用 more 預覽
-echo.
-set "OUTPUT_CHOICE=1"
-set /p "OUTPUT_CHOICE=選擇 [1/2]（直接 Enter 為 1）: "
 
 echo.
 echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo.
 
 :: ============================================================
-:: Step 4: 取得 PR 資訊
+:: Step 4+5: 並行取得 PR 資訊 + diff
 :: ============================================================
 call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
-echo 📡 [1/4] 取得 PR 資訊...
+echo 📡 [1/3] 取得 PR 資訊 + diff...
 
 set "META_TMPFILE=%TEMP%\pr_meta_%RANDOM%.json"
+set "DIFF_TMPFILE=%TEMP%\pr_diff_%RANDOM%.txt"
+
+:: 背景取得 diff
+start /b cmd /c "gh pr diff %PR_NUMBER% --repo %REPO% > "%DIFF_TMPFILE%" 2>&1"
+
+:: 前景取得 PR 資訊
 gh pr view %PR_NUMBER% --repo %REPO% --json title,additions,deletions,changedFiles,state,author,baseRefName,headRefName > "%META_TMPFILE%" 2>&1
 if errorlevel 1 (
     echo ❌ 無法取得 PR 資訊
@@ -121,25 +127,16 @@ for /f "delims=" %%a in ('jq -r ".changedFiles" "%META_TMPFILE%"') do set "PR_FI
 for /f "delims=" %%a in ('jq -r ".additions" "%META_TMPFILE%"') do set "PR_ADD=%%a"
 for /f "delims=" %%a in ('jq -r ".deletions" "%META_TMPFILE%"') do set "PR_DEL=%%a"
 for /f "delims=" %%a in ('jq -r ".headRefName" "%META_TMPFILE%"') do set "PR_HEAD_BRANCH=%%a"
-
-call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_END
-set /a "STEP_ELAPSED=STEP_END - STEP_START"
 echo    ✓ %PR_TITLE%
-echo    ✓ %PR_FILES% 個檔案 ^| +%PR_ADD% -%PR_DEL% (%STEP_ELAPSED%s)
-echo.
+echo    ✓ %PR_FILES% 個檔案 ^| +%PR_ADD% -%PR_DEL%
 
-:: ============================================================
-:: Step 5: 取得 PR diff
-:: ============================================================
-call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
-echo 📡 [2/4] 取得 PR diff...
+:: 等待 diff 完成（檢查檔案是否寫完）
+:wait_diff
+powershell -NoProfile -Command "Start-Sleep -Milliseconds 200"
+2>nul (>>"%DIFF_TMPFILE%" (call )) || goto :wait_diff
 
-set "DIFF_TMPFILE=%TEMP%\pr_diff_%RANDOM%.txt"
-gh pr diff %PR_NUMBER% --repo %REPO% > "%DIFF_TMPFILE%" 2>&1
-if errorlevel 1 (
+if not exist "%DIFF_TMPFILE%" (
     echo ❌ 無法取得 diff
-    type "%DIFF_TMPFILE%"
-    del /f "%DIFF_TMPFILE%" >nul 2>&1
     del /f "%META_TMPFILE%" >nul 2>&1
     pause
     exit /b 1
@@ -155,7 +152,7 @@ echo.
 :: Step 6: 偵測語言並組合 prompt
 :: ============================================================
 call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
-echo 🔧 [3/4] 準備分析資料...
+echo 🔧 [2/3] 準備分析資料...
 
 set "PROMPT_TMPFILE=%TEMP%\pr_prompt_%RANDOM%.md"
 set "PATTERNS_DIR=%SCRIPT_DIR%\patterns"
@@ -192,7 +189,7 @@ del /f "%DIFF_TMPFILE%" >nul 2>&1
 :: ============================================================
 :: Step 7: AI 分析
 :: ============================================================
-echo 🤖 [4/4] AI 分析中...（請等候）
+echo 🤖 [3/3] AI 分析中...（請等候）
 
 set "AI_TMPFILE=%TEMP%\pr_ai_%RANDOM%.md"
 set "AI_RAW=%AI_TMPFILE%.raw"
@@ -261,26 +258,22 @@ powershell -NoProfile -Command ^
     "$footer = \"`n---`nModel: %ENGINE_NAME% | Total: %TOTAL_MIN%:%TOTAL_SEC% | Tokens: %INPUT_TOKENS% in / %OUTPUT_TOKENS% out | Cost: $%COST_USD%`n<!-- verify-meta: repo=%REPO% branch=%PR_HEAD_BRANCH% -->`n\";" ^
     "[System.IO.File]::WriteAllText('%OUTPUT_PATH%', $content + $footer, [System.Text.Encoding]::UTF8)"
 
-if "%OUTPUT_CHOICE%"=="2" (
-    more "%AI_TMPFILE%"
-) else (
-    echo.
-    echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    echo.
-    :: 顯示彙整表
-    powershell -NoProfile -Command ^
-        "$lines = Get-Content '%AI_TMPFILE%';" ^
-        "$found = $false;" ^
-        "foreach ($line in $lines) {" ^
-        "  if ($line -match '(?i)^#+ *彙整表') { $found = $true };" ^
-        "  if ($found) { Write-Host $line };" ^
-        "}"
-    echo.
-    echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    echo ✅ 完整報告已儲存至 %OUTPUT_PATH%
-    echo ⏱  總耗時 %TOTAL_MIN%:%TOTAL_SEC%
-    echo 📊 Tokens: %INPUT_TOKENS% in / %OUTPUT_TOKENS% out ^| 費用: $%COST_USD%
-)
+echo.
+echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo.
+:: 顯示彙整表
+powershell -NoProfile -Command ^
+    "$lines = Get-Content '%AI_TMPFILE%';" ^
+    "$found = $false;" ^
+    "foreach ($line in $lines) {" ^
+    "  if ($line -match '(?i)^#+ *彙整表') { $found = $true };" ^
+    "  if ($found) { Write-Host $line };" ^
+    "}"
+echo.
+echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+echo ✅ 完整報告已儲存至 %OUTPUT_PATH%
+echo ⏱  總耗時 %TOTAL_MIN%:%TOTAL_SEC%
+echo 📊 Tokens: %INPUT_TOKENS% in / %OUTPUT_TOKENS% out ^| 費用: $%COST_USD%
 
 del /f "%AI_TMPFILE%" >nul 2>&1
 
@@ -298,7 +291,10 @@ if %BUG_COUNT% gtr 0 (
     set "VERIFY=N"
     set /p "VERIFY=是否進行深度驗證？ [y/N]: "
     if /i "!VERIFY!"=="y" (
-        :: 若使用 API 引擎，傳遞設定給 verify-bug
+        :: 傳遞引擎選擇給 verify-bug
+        if "%ENGINE_CHOICE%"=="1" set "PR_REVIEW_ENGINE=claude"
+        if "%ENGINE_CHOICE%"=="2" set "PR_REVIEW_ENGINE=claude"
+        if "%ENGINE_CHOICE%"=="3" set "PR_REVIEW_ENGINE=opencode"
         if "%ENGINE_CHOICE%"=="4" set "PR_REVIEW_ENGINE=api"
         call "%SCRIPT_DIR%\verify-bug.bat" "%OUTPUT_PATH%"
         exit /b 0

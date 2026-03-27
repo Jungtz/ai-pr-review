@@ -68,17 +68,20 @@ if [ -z "$PR_NUMBER" ] || [ -z "$REPO" ]; then
   exit 1
 fi
 
-# Step 2: 選擇 AI 引擎
+# Step 2: 選擇 AI 引擎（讀取快取作為預設值）
+CACHED_ENGINE=$(grep '^ENGINE=' "$API_CONFIG" 2>/dev/null | cut -d= -f2-)
+CACHED_ENGINE=${CACHED_ENGINE:-1}
+
 echo ""
 echo "🤖 選擇 AI 引擎："
-echo "  [1] Claude Sonnet（預設，正式 review）"
+echo "  [1] Claude Sonnet（正式 review）"
 echo "  [2] Claude Opus（深度分析）"
 echo "  [3] opencode"
 echo "  [4] OpenAI 相容 API（Ollama / OpenRouter / 其他）"
 echo "  [5] 自訂指令"
 echo ""
-read -r -p "選擇 [1/2/3/4/5]（直接 Enter 為 1）: " ENGINE_CHOICE
-ENGINE_CHOICE=${ENGINE_CHOICE:-1}
+read -r -p "選擇 [1/2/3/4/5]（直接 Enter 為 ${CACHED_ENGINE}）: " ENGINE_CHOICE
+ENGINE_CHOICE=${ENGINE_CHOICE:-$CACHED_ENGINE}
 
 if [ "$ENGINE_CHOICE" = "4" ]; then
   echo ""
@@ -93,36 +96,38 @@ if [ "$ENGINE_CHOICE" = "5" ]; then
   read -r ENGINE_CHOICE
 fi
 
+# 快取引擎選擇
+if grep -q '^ENGINE=' "$API_CONFIG" 2>/dev/null; then
+  sed -i '' "s/^ENGINE=.*/ENGINE=$ENGINE_CHOICE/" "$API_CONFIG"
+else
+  echo "ENGINE=$ENGINE_CHOICE" >> "$API_CONFIG"
+fi
+
 case "$ENGINE_CHOICE" in
   4) echo "   → 使用: API (${API_MODEL} @ ${API_BASE})" ;;
   *) echo "   → 使用: ${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
 esac
 
-# Step 3: 選擇輸出方式
 TIMESTAMP=$(date +%y%m%d%H%M%S)
 FILENAME="results/PR_${PR_NUMBER}_${TIMESTAMP}.md"
-
-# Step 3.1: 建立 results 目錄
 mkdir -p "$SCRIPT_DIR/results"
-
-echo ""
-echo "📄 輸出方式："
-echo "  [1] 儲存為 ${FILENAME}（預設）"
-echo "  [2] 用 less 預覽"
-echo ""
-read -r -p "選擇 [1/2]（直接 Enter 為 1）: " OUTPUT_CHOICE
-OUTPUT_CHOICE=${OUTPUT_CHOICE:-1}
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# Step 4: 取得 PR 資訊
+# Step 4+5: 並行取得 PR 資訊 + diff
 STEP_START=$SECONDS
-echo "📡 [1/4] 取得 PR 資訊..."
+echo "📡 [1/3] 取得 PR 資訊 + diff..."
+
+DIFF_TMPFILE=$(mktemp)
+gh pr diff "$PR_NUMBER" --repo "$REPO" > "$DIFF_TMPFILE" 2>&1 &
+DIFF_PID=$!
+
 PR_META=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json title,additions,deletions,changedFiles,state,author,baseRefName,headRefName 2>&1)
 if [ $? -ne 0 ]; then
   echo "❌ 無法取得 PR 資訊: $PR_META"
+  wait $DIFF_PID; rm -f "$DIFF_TMPFILE"
   echo "按任意鍵關閉..."
   read -n 1
   exit 1
@@ -134,14 +139,13 @@ PR_ADD=$(echo "$PR_META" | jq -r '.additions')
 PR_DEL=$(echo "$PR_META" | jq -r '.deletions')
 PR_HEAD_BRANCH=$(echo "$PR_META" | jq -r '.headRefName')
 echo "   ✓ ${PR_TITLE}"
-echo "   ✓ ${PR_FILES} 個檔案 | +${PR_ADD} -${PR_DEL} $(step_time $STEP_START)"
-echo ""
+echo "   ✓ ${PR_FILES} 個檔案 | +${PR_ADD} -${PR_DEL}"
 
-# Step 5: 取得 PR diff
-STEP_START=$SECONDS
-echo "📡 [2/4] 取得 PR diff..."
-PR_DIFF=$(gh pr diff "$PR_NUMBER" --repo "$REPO" 2>&1)
-if [ $? -ne 0 ]; then
+wait $DIFF_PID
+DIFF_EXIT=$?
+PR_DIFF=$(cat "$DIFF_TMPFILE")
+rm -f "$DIFF_TMPFILE"
+if [ $DIFF_EXIT -ne 0 ]; then
   echo "❌ 無法取得 diff: $PR_DIFF"
   echo "按任意鍵關閉..."
   read -n 1
@@ -153,7 +157,7 @@ echo ""
 
 # Step 6: 偵測語言並組合 prompt
 STEP_START=$SECONDS
-echo "🔧 [3/4] 準備分析資料..."
+echo "🔧 [2/3] 準備分析資料..."
 
 # 從 diff 檔案副檔名偵測語言
 DETECTED_LANGS=""
@@ -209,7 +213,7 @@ echo "   ✓ 完成 $(step_time $STEP_START)"
 echo ""
 
 # Step 7: AI 分析（背景執行 + spinner）
-echo "🤖 [4/4] AI 分析中..."
+echo "🤖 [3/3] AI 分析中..."
 TMPFILE=$(mktemp)
 
 run_ai "$ENGINE_CHOICE" "$PROMPT_TMPFILE" "$TMPFILE" &
@@ -236,34 +240,23 @@ case "$ENGINE_CHOICE" in
   *) ENGINE_NAME="${ENGINE_LABELS[$ENGINE_CHOICE]:-$ENGINE_CHOICE}" ;;
 esac
 
-if [ "$OUTPUT_CHOICE" = "2" ]; then
-  less "$TMPFILE"
-  # 也存一份供驗證使用
-  {
-    cat "$TMPFILE"
-    printf "\n---\n"
-    printf "Model: %s | Total: %02d:%02d | Tokens: %d in / %d out | Cost: \$%.4f\n" "$ENGINE_NAME" "$TOTAL_MIN" "$TOTAL_SEC" "$INPUT_TOKENS" "$OUTPUT_TOKENS" "$COST_USD"
-    printf "<!-- verify-meta: repo=%s branch=%s -->\n" "$REPO" "$PR_HEAD_BRANCH"
-  } > "$FILENAME"
-  rm -f "$TMPFILE"
-else
-  {
-    cat "$TMPFILE"
-    printf "\n---\n"
-    printf "Model: %s | Total: %02d:%02d | Tokens: %d in / %d out | Cost: \$%.4f\n" "$ENGINE_NAME" "$TOTAL_MIN" "$TOTAL_SEC" "$INPUT_TOKENS" "$OUTPUT_TOKENS" "$COST_USD"
-    printf "<!-- verify-meta: repo=%s branch=%s -->\n" "$REPO" "$PR_HEAD_BRANCH"
-  } > "$FILENAME"
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
-  awk '/^#+ *彙整表/,0' "$TMPFILE"
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  printf "✅ 完整報告已儲存至 ${SCRIPT_DIR}/${FILENAME}\n"
-  printf "⏱  總耗時 %02d:%02d\n" "$TOTAL_MIN" "$TOTAL_SEC"
-  printf "📊 Tokens: %'d in / %'d out | 費用: \$%.4f\n" "$INPUT_TOKENS" "$OUTPUT_TOKENS" "$COST_USD"
-  rm -f "$TMPFILE"
-fi
+{
+  cat "$TMPFILE"
+  printf "\n---\n"
+  printf "Model: %s | Total: %02d:%02d | Tokens: %d in / %d out | Cost: \$%.4f\n" "$ENGINE_NAME" "$TOTAL_MIN" "$TOTAL_SEC" "$INPUT_TOKENS" "$OUTPUT_TOKENS" "$COST_USD"
+  printf "<!-- verify-meta: repo=%s branch=%s -->\n" "$REPO" "$PR_HEAD_BRANCH"
+} > "$FILENAME"
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+awk '/^#+ *彙整表/,0' "$TMPFILE"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+printf "✅ 完整報告已儲存至 ${SCRIPT_DIR}/${FILENAME}\n"
+printf "⏱  總耗時 %02d:%02d\n" "$TOTAL_MIN" "$TOTAL_SEC"
+printf "📊 Tokens: %'d in / %'d out | 費用: \$%.4f\n" "$INPUT_TOKENS" "$OUTPUT_TOKENS" "$COST_USD"
+rm -f "$TMPFILE"
 
 # Step 8: 檢查 🔴 問題，詢問是否驗證
 BUG_COUNT=$(grep '統計' "$FILENAME" 2>/dev/null | grep -oE '🔴[^/]*' | grep -oE '[0-9]+' | head -1)
@@ -274,11 +267,12 @@ if [ "$BUG_COUNT" -gt 0 ]; then
   read -r -p "是否進行深度驗證？ [y/N]: " VERIFY
   VERIFY=${VERIFY:-N}
   if [[ "$VERIFY" =~ ^[Yy]$ ]]; then
-    # 若使用 API 引擎，傳遞設定給 verify-bug
-    if [ "$ENGINE_CHOICE" = "4" ]; then
-      export PR_REVIEW_ENGINE=api
-      export API_BASE API_KEY API_MODEL
-    fi
+    # 傳遞引擎選擇給 verify-bug
+    case "$ENGINE_CHOICE" in
+      1|2) export PR_REVIEW_ENGINE=claude ;;
+      3)   export PR_REVIEW_ENGINE=opencode ;;
+      4)   export PR_REVIEW_ENGINE=api; export API_BASE API_KEY API_MODEL ;;
+    esac
     bash "$SCRIPT_DIR/verify-bug.command" "$SCRIPT_DIR/$FILENAME"
     exit 0
   else
