@@ -22,29 +22,31 @@ gh auth login
 
 ```
 ai-pr-review/
-├── review-pr.command    # macOS 主程式（雙擊執行）
-├── review-pr.bat        # Windows 主程式（雙擊執行）
+├── review-pr.command    # macOS 主程式
+├── review-pr.bat        # Windows 主程式
 ├── verify-bug.command   # macOS BUG 驗證
 ├── verify-bug.bat       # Windows BUG 驗證
 ├── evolve.command       # macOS Pattern 進化
 ├── evolve.bat           # Windows Pattern 進化
 ├── lib/
-│   ├── api-helper.sh      # 共用 API 函式（bash）
-│   └── api-helper.ps1     # 共用 API 函式（Windows PowerShell）
+│   ├── common.sh        # 共用工具函式（bash）
+│   ├── common.bat       # 共用工具函式（Windows）
+│   ├── api-helper.sh    # API 呼叫輔助（bash）
+│   └── api-helper.ps1   # API 呼叫輔助（PowerShell）
 ├── prompts/
 │   ├── review-pr.md     # Review prompt 模板（含 {{PATTERNS}} 佔位符）
-│   ├── verify-bug.md    # 驗證 prompt 模板
+│   ├── verify-bug.md    # BUG 驗證 prompt 模板
 │   └── evolve.md        # Pattern 進化 prompt 模板
 ├── patterns/
 │   ├── base.md          # 通用 patterns（語言無關）
-│   ├── javascript.md
-│   ├── python.md
-│   ├── go.md
-│   └── php.md
+│   ├── javascript.md    # JavaScript/TypeScript patterns
+│   ├── python.md        # Python patterns
+│   ├── go.md            # Go patterns
+│   └── php.md           # PHP patterns
 └── results/             # 輸出報告（.gitignore）
-    ├── PR_*_.md
-    ├── PR_*_verify.md
-    └── evolve_*.md
+    ├── PR_*_.md         # Review 報告
+    ├── PR_*_verify.md   # 驗證報告
+    └── evolve_*.md       # Pattern 進化建議
 ```
 
 ## 使用方式
@@ -179,9 +181,11 @@ macOS：`./evolve.command`　Windows：`evolve.bat`
 ## 自訂 Prompt
 
 - `prompts/review-pr.md` — Review 主模板，`{{PATTERNS}}` 佔位符會被腳本自動替換為偵測到的 patterns
-- `prompts/verify-bug.md` — 驗證 prompt 模板
+- `prompts/verify-bug.md` — BUG 驗證 prompt 模板
 - `prompts/evolve.md` — Pattern 進化 prompt 模板
 - `patterns/*.md` — 各語言的檢測規則，可自由新增或修改
+- `lib/common.sh` / `lib/common.bat` — 共用工具函式（計時器、spinner）
+- `lib/api-helper.sh` / `lib/api-helper.ps1` — API 呼叫輔助
 
 ## License
 
