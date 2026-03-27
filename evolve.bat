@@ -13,7 +13,7 @@ set "PROMPT_FILE=%SCRIPT_DIR%\prompts\evolve.md"
 set "PATTERNS_DIR=%SCRIPT_DIR%\patterns"
 set "RESULTS_DIR=%SCRIPT_DIR%\results"
 
-call :get_seconds TOTAL_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds TOTAL_START
 
 echo.
 echo 🧬 Pattern Evolution
@@ -23,7 +23,7 @@ echo.
 :: ============================================================
 :: Step 1: 掃描報告
 :: ============================================================
-call :get_seconds STEP_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
 echo 📡 [1/3] 掃描歷史報告...
 
 set "REVIEW_COUNT=0"
@@ -39,7 +39,7 @@ if %REVIEW_COUNT%==0 (
     exit /b 1
 )
 
-call :get_seconds STEP_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_END
 set /a "STEP_ELAPSED=STEP_END - STEP_START"
 echo    ✓ %REVIEW_COUNT% 份 review 報告, %VERIFY_COUNT% 份驗證報告 (%STEP_ELAPSED%s)
 echo.
@@ -57,28 +57,7 @@ if "%ENGINE_CHOICE%"=="2" set "ENGINE_NAME=opencode"
 if "%ENGINE_CHOICE%"=="3" (
     echo.
     set "API_CONFIG=%SCRIPT_DIR%\.api-config"
-    set "CACHED_BASE=http://localhost:11434/v1"
-    set "CACHED_KEY="
-    set "CACHED_MODEL=llama3"
-    if exist "!API_CONFIG!" (
-        for /f "usebackq tokens=1,* delims==" %%a in ("!API_CONFIG!") do (
-            if "%%a"=="API_BASE" set "CACHED_BASE=%%b"
-            if "%%a"=="API_KEY" set "CACHED_KEY=%%b"
-            if "%%a"=="API_MODEL" set "CACHED_MODEL=%%b"
-        )
-    )
-    for /f "delims=" %%m in ('powershell -NoProfile -File "%SCRIPT_DIR%\lib\api-helper.ps1" -Action mask-key -ApiKey "!CACHED_KEY!"') do set "MASKED_KEY=%%m"
-    set "API_BASE=!CACHED_BASE!"
-    set /p "API_BASE=API Base URL [!CACHED_BASE!]: "
-    set "API_KEY=!CACHED_KEY!"
-    set /p "API_KEY=API Key [!MASKED_KEY!]: "
-    set "API_MODEL=!CACHED_MODEL!"
-    set /p "API_MODEL=Model 名稱 [!CACHED_MODEL!]: "
-    (
-        echo API_BASE=!API_BASE!
-        echo API_KEY=!API_KEY!
-        echo API_MODEL=!API_MODEL!
-    ) > "!API_CONFIG!"
+    call "%SCRIPT_DIR%\lib\common.bat" :prompt_api_settings
     set "ENGINE_NAME=API (!API_MODEL!)"
 )
 echo    → 使用: %ENGINE_NAME%
@@ -87,7 +66,7 @@ echo.
 :: ============================================================
 :: Step 2: 組合 prompt
 :: ============================================================
-call :get_seconds STEP_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
 echo 🔧 [2/3] 準備分析資料...
 
 set "PROMPT_TMPFILE=%TEMP%\evolve_prompt_%RANDOM%.md"
@@ -110,7 +89,7 @@ powershell -NoProfile -Command ^
     "Write-Host \"   ✓ Prompt 大小: ${size}KB\";" ^
     "[System.IO.File]::WriteAllText('%PROMPT_TMPFILE%', $out, [System.Text.Encoding]::UTF8)"
 
-call :get_seconds STEP_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_END
 set /a "STEP_ELAPSED=STEP_END - STEP_START"
 echo    (%STEP_ELAPSED%s)
 echo.
@@ -124,7 +103,7 @@ set "AI_TMPFILE=%TEMP%\evolve_ai_%RANDOM%.md"
 set "AI_RAW=%AI_TMPFILE%.raw"
 set "AI_USAGE=%AI_TMPFILE%.usage"
 
-call :get_seconds AI_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds AI_START
 
 if "%ENGINE_CHOICE%"=="2" (
     set "PROMPT_CONTENT="
@@ -153,23 +132,15 @@ if "%ENGINE_CHOICE%"=="2" (
 del /f "%AI_RAW%" >nul 2>&1
 del /f "%PROMPT_TMPFILE%" >nul 2>&1
 
-call :get_seconds AI_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds AI_END
 set /a "AI_ELAPSED=AI_END - AI_START"
 echo    ✓ 分析完成 (%AI_ELAPSED%s)
 
 :: 讀取 token 用量
-set "INPUT_TOKENS=0"
-set "OUTPUT_TOKENS=0"
-set "COST_USD=0"
-if exist "%AI_USAGE%" (
-    for /f "delims=" %%a in ('jq -r ".input_tokens // 0" "%AI_USAGE%" 2^>nul') do set "INPUT_TOKENS=%%a"
-    for /f "delims=" %%a in ('jq -r ".output_tokens // 0" "%AI_USAGE%" 2^>nul') do set "OUTPUT_TOKENS=%%a"
-    for /f "delims=" %%a in ('jq -r ".cost_usd // 0" "%AI_USAGE%" 2^>nul') do set "COST_USD=%%a"
-    del /f "%AI_USAGE%" >nul 2>&1
-)
+call "%SCRIPT_DIR%\lib\common.bat" :read_usage "%AI_USAGE%"
 
 :: 總耗時
-call :get_seconds TOTAL_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds TOTAL_END
 set /a "TOTAL_ELAPSED=TOTAL_END - TOTAL_START"
 set /a "TOTAL_MIN=TOTAL_ELAPSED / 60"
 set /a "TOTAL_SEC=TOTAL_ELAPSED %% 60"
@@ -204,7 +175,3 @@ echo.
 pause
 exit /b 0
 
-:: ============================================================
-:get_seconds
-for /f %%a in ('powershell -NoProfile -Command "[int][Math]::Floor(([DateTime]::Now - [DateTime]::Today).TotalSeconds)"') do set "%1=%%a"
-goto :eof

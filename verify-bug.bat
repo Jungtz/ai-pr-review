@@ -7,7 +7,7 @@ set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
 set "PROMPT_FILE=%SCRIPT_DIR%\prompts\verify-bug.md"
-call :get_seconds TOTAL_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds TOTAL_START
 
 :: ============================================================
 :: Step 1: 取得報告檔案
@@ -110,32 +110,8 @@ if "%ENGINE_CHOICE%"=="1" set "ENGINE_NAME=Claude Opus"
 if "%ENGINE_CHOICE%"=="2" set "ENGINE_NAME=opencode"
 if "%ENGINE_CHOICE%"=="3" (
     echo.
-    :: 讀取快取設定作為預設值
     set "API_CONFIG=%SCRIPT_DIR%\.api-config"
-    set "CACHED_BASE=http://localhost:11434/v1"
-    set "CACHED_KEY="
-    set "CACHED_MODEL=llama3"
-    if exist "!API_CONFIG!" (
-        for /f "usebackq tokens=1,* delims==" %%a in ("!API_CONFIG!") do (
-            if "%%a"=="API_BASE" set "CACHED_BASE=%%b"
-            if "%%a"=="API_KEY" set "CACHED_KEY=%%b"
-            if "%%a"=="API_MODEL" set "CACHED_MODEL=%%b"
-        )
-    )
-    :: 遮罩 API Key 顯示
-    for /f "delims=" %%m in ('powershell -NoProfile -File "%SCRIPT_DIR%\lib\api-helper.ps1" -Action mask-key -ApiKey "!CACHED_KEY!"') do set "MASKED_KEY=%%m"
-    set "API_BASE=!CACHED_BASE!"
-    set /p "API_BASE=API Base URL [!CACHED_BASE!]: "
-    set "API_KEY=!CACHED_KEY!"
-    set /p "API_KEY=API Key [!MASKED_KEY!]: "
-    set "API_MODEL=!CACHED_MODEL!"
-    set /p "API_MODEL=Model 名稱 [!CACHED_MODEL!]: "
-    :: 寫入快取
-    (
-        echo API_BASE=!API_BASE!
-        echo API_KEY=!API_KEY!
-        echo API_MODEL=!API_MODEL!
-    ) > "!API_CONFIG!"
+    call "%SCRIPT_DIR%\lib\common.bat" :prompt_api_settings
     set "ENGINE_NAME=API (!API_MODEL!)"
 )
 
@@ -149,7 +125,7 @@ echo.
 :: ============================================================
 :: Step 2: 提取 🔴 問題區塊
 :: ============================================================
-call :get_seconds STEP_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
 echo 🔧 [1/2] 提取 🔴 BUG 級問題...
 
 set "BUG_DIR=%TEMP%\verify_bugs_%RANDOM%"
@@ -182,7 +158,7 @@ if %BUG_COUNT%==0 (
     exit /b 0
 )
 
-call :get_seconds STEP_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_END
 set /a "STEP_ELAPSED=STEP_END - STEP_START"
 echo    ✓ 找到 %BUG_COUNT% 個問題 (%STEP_ELAPSED%s)
 echo.
@@ -269,7 +245,7 @@ for %%f in ("%BUG_DIR%\bug_*.txt") do (
         "$out = $template + \"`n`n## The issue to verify`n`n\" + $issue;" ^
         "[System.IO.File]::WriteAllText('!V_PROMPT!', $out, [System.Text.Encoding]::UTF8)"
 
-    call :get_seconds V_START
+    call "%SCRIPT_DIR%\lib\common.bat" :get_seconds V_START
 
     if "!ENGINE_CHOICE!"=="1" (
         pushd "%PROJECT_DIR%"
@@ -300,7 +276,7 @@ for %%f in ("%BUG_DIR%\bug_*.txt") do (
         )
     )
 
-    call :get_seconds V_END
+    call "%SCRIPT_DIR%\lib\common.bat" :get_seconds V_END
     set /a "V_ELAPSED=V_END - V_START"
     echo    ✓ 完成 (!V_ELAPSED!s)
 
@@ -346,7 +322,7 @@ if "%CLONE_CLEANUP%"=="true" (
 )
 
 :: 總耗時
-call :get_seconds TOTAL_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds TOTAL_END
 set /a "TOTAL_ELAPSED=TOTAL_END - TOTAL_START"
 set /a "TOTAL_MIN=TOTAL_ELAPSED / 60"
 set /a "TOTAL_SEC=TOTAL_ELAPSED %% 60"
@@ -394,7 +370,3 @@ exit /b 0
 
 :: ============================================================
 :: 輔助函式：取得當前秒數（自午夜起算）
-:: ============================================================
-:get_seconds
-for /f %%a in ('powershell -NoProfile -Command "[int][Math]::Floor(([DateTime]::Now - [DateTime]::Today).TotalSeconds)"') do set "%1=%%a"
-goto :eof

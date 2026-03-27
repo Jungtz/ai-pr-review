@@ -10,7 +10,7 @@ cd /d "%SCRIPT_DIR%"
 set "PROMPT_FILE=%SCRIPT_DIR%\prompts\review-pr.md"
 
 :: 記錄開始時間（秒）
-call :get_seconds TOTAL_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds TOTAL_START
 
 :: ============================================================
 :: Step 1: 輸入 PR 連結
@@ -60,32 +60,8 @@ set /p "ENGINE_CHOICE=選擇 [1/2/3/4/5]（直接 Enter 為 1）: "
 
 if "%ENGINE_CHOICE%"=="4" (
     echo.
-    :: 讀取快取設定作為預設值
     set "API_CONFIG=%SCRIPT_DIR%\.api-config"
-    set "CACHED_BASE=http://localhost:11434/v1"
-    set "CACHED_KEY="
-    set "CACHED_MODEL=llama3"
-    if exist "!API_CONFIG!" (
-        for /f "usebackq tokens=1,* delims==" %%a in ("!API_CONFIG!") do (
-            if "%%a"=="API_BASE" set "CACHED_BASE=%%b"
-            if "%%a"=="API_KEY" set "CACHED_KEY=%%b"
-            if "%%a"=="API_MODEL" set "CACHED_MODEL=%%b"
-        )
-    )
-    :: 遮罩 API Key 顯示
-    for /f "delims=" %%m in ('powershell -NoProfile -File "%SCRIPT_DIR%\lib\api-helper.ps1" -Action mask-key -ApiKey "!CACHED_KEY!"') do set "MASKED_KEY=%%m"
-    set "API_BASE=!CACHED_BASE!"
-    set /p "API_BASE=API Base URL [!CACHED_BASE!]: "
-    set "API_KEY=!CACHED_KEY!"
-    set /p "API_KEY=API Key [!MASKED_KEY!]: "
-    set "API_MODEL=!CACHED_MODEL!"
-    set /p "API_MODEL=Model 名稱 [!CACHED_MODEL!]: "
-    :: 寫入快取
-    (
-        echo API_BASE=!API_BASE!
-        echo API_KEY=!API_KEY!
-        echo API_MODEL=!API_MODEL!
-    ) > "!API_CONFIG!"
+    call "%SCRIPT_DIR%\lib\common.bat" :prompt_api_settings
 )
 
 if "%ENGINE_CHOICE%"=="5" (
@@ -127,7 +103,7 @@ echo.
 :: ============================================================
 :: Step 4: 取得 PR 資訊
 :: ============================================================
-call :get_seconds STEP_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
 echo 📡 [1/4] 取得 PR 資訊...
 
 set "META_TMPFILE=%TEMP%\pr_meta_%RANDOM%.json"
@@ -146,7 +122,7 @@ for /f "delims=" %%a in ('jq -r ".additions" "%META_TMPFILE%"') do set "PR_ADD=%
 for /f "delims=" %%a in ('jq -r ".deletions" "%META_TMPFILE%"') do set "PR_DEL=%%a"
 for /f "delims=" %%a in ('jq -r ".headRefName" "%META_TMPFILE%"') do set "PR_HEAD_BRANCH=%%a"
 
-call :get_seconds STEP_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_END
 set /a "STEP_ELAPSED=STEP_END - STEP_START"
 echo    ✓ %PR_TITLE%
 echo    ✓ %PR_FILES% 個檔案 ^| +%PR_ADD% -%PR_DEL% (%STEP_ELAPSED%s)
@@ -155,7 +131,7 @@ echo.
 :: ============================================================
 :: Step 5: 取得 PR diff
 :: ============================================================
-call :get_seconds STEP_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
 echo 📡 [2/4] 取得 PR diff...
 
 set "DIFF_TMPFILE=%TEMP%\pr_diff_%RANDOM%.txt"
@@ -170,7 +146,7 @@ if errorlevel 1 (
 )
 
 for /f %%a in ('find /c /v "" ^< "%DIFF_TMPFILE%"') do set "DIFF_LINES=%%a"
-call :get_seconds STEP_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_END
 set /a "STEP_ELAPSED=STEP_END - STEP_START"
 echo    ✓ %DIFF_LINES% 行 diff (%STEP_ELAPSED%s)
 echo.
@@ -178,7 +154,7 @@ echo.
 :: ============================================================
 :: Step 6: 偵測語言並組合 prompt
 :: ============================================================
-call :get_seconds STEP_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_START
 echo 🔧 [3/4] 準備分析資料...
 
 set "PROMPT_TMPFILE=%TEMP%\pr_prompt_%RANDOM%.md"
@@ -204,7 +180,7 @@ powershell -NoProfile -Command ^
     "$out = $template + \"`n`n## PR Metadata (JSON)`n`````json`n\" + $meta + \"`n`````n`n## PR Diff`n`````diff`n\" + $diff + \"`n`````n\";" ^
     "[System.IO.File]::WriteAllText('%PROMPT_TMPFILE%', $out, [System.Text.Encoding]::UTF8)"
 
-call :get_seconds STEP_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds STEP_END
 set /a "STEP_ELAPSED=STEP_END - STEP_START"
 echo    ✓ 完成 (%STEP_ELAPSED%s)
 echo.
@@ -222,7 +198,7 @@ set "AI_TMPFILE=%TEMP%\pr_ai_%RANDOM%.md"
 set "AI_RAW=%AI_TMPFILE%.raw"
 set "AI_USAGE=%AI_TMPFILE%.usage"
 
-call :get_seconds AI_START
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds AI_START
 
 if "%ENGINE_CHOICE%"=="1" (
     type "%PROMPT_TMPFILE%" | claude -p --model sonnet --output-format json > "%AI_RAW%"
@@ -259,14 +235,14 @@ if "%ENGINE_CHOICE%"=="1" (
     echo {} > "%AI_USAGE%"
 )
 
-call :get_seconds AI_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds AI_END
 set /a "AI_ELAPSED=AI_END - AI_START"
 echo    ✓ 分析完成 (%AI_ELAPSED%s)
 
 del /f "%PROMPT_TMPFILE%" >nul 2>&1
 
 :: 總耗時
-call :get_seconds TOTAL_END
+call "%SCRIPT_DIR%\lib\common.bat" :get_seconds TOTAL_END
 set /a "TOTAL_ELAPSED=TOTAL_END - TOTAL_START"
 set /a "TOTAL_MIN=TOTAL_ELAPSED / 60"
 set /a "TOTAL_SEC=TOTAL_ELAPSED %% 60"
@@ -274,15 +250,7 @@ if %TOTAL_MIN% lss 10 set "TOTAL_MIN=0%TOTAL_MIN%"
 if %TOTAL_SEC% lss 10 set "TOTAL_SEC=0%TOTAL_SEC%"
 
 :: 讀取 token 用量
-set "INPUT_TOKENS=0"
-set "OUTPUT_TOKENS=0"
-set "COST_USD=0"
-if exist "%AI_USAGE%" (
-    for /f "delims=" %%a in ('jq -r ".input_tokens // 0" "%AI_USAGE%" 2^>nul') do set "INPUT_TOKENS=%%a"
-    for /f "delims=" %%a in ('jq -r ".output_tokens // 0" "%AI_USAGE%" 2^>nul') do set "OUTPUT_TOKENS=%%a"
-    for /f "delims=" %%a in ('jq -r ".cost_usd // 0" "%AI_USAGE%" 2^>nul') do set "COST_USD=%%a"
-    del /f "%AI_USAGE%" >nul 2>&1
-)
+call "%SCRIPT_DIR%\lib\common.bat" :read_usage "%AI_USAGE%"
 
 :: 寫入輸出檔案
 set "OUTPUT_PATH=%SCRIPT_DIR%\%FILENAME%"
@@ -346,9 +314,3 @@ echo.
 pause
 exit /b 0
 
-:: ============================================================
-:: 輔助函式：取得當前秒數（自午夜起算）
-:: ============================================================
-:get_seconds
-for /f %%a in ('powershell -NoProfile -Command "[int][Math]::Floor(([DateTime]::Now - [DateTime]::Today).TotalSeconds)"') do set "%1=%%a"
-goto :eof
