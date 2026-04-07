@@ -89,7 +89,7 @@ review-pr.bat
         ↓
 🔧 從 diff 副檔名偵測語言 → 載入對應 patterns
         ↓
-🤖 AI 分析 → 產出 review 報告
+🤖 AI 分析（區分商業邏輯意圖，優化 BUG 判定） → 產出 review 報告
         ↓
 📊 顯示彙整表 + 儲存報告
         ↓
