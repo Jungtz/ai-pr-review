@@ -297,9 +297,12 @@ for %%f in ("%BUG_DIR%\bug_*.txt") do (
 
     :: 統計結果
     set /a "VERIFIED+=1"
-    findstr /c:"CONFIRMED" "!V_TMPFILE!" >nul 2>&1 && set /a "CONFIRMED+=1"
-    findstr /c:"FALSE POSITIVE" "!V_TMPFILE!" >nul 2>&1 && set /a "FALSE_POSITIVE+=1"
-    findstr /c:"POTENTIAL" "!V_TMPFILE!" >nul 2>&1 && set /a "POTENTIAL+=1"
+    for /f "delims=" %%v in ('powershell -NoProfile -Command ^
+        "$c = Get-Content -Raw '!V_TMPFILE!';" ^
+        "if ($c -match '結論[：:]\\s*(CONFIRMED|FALSE POSITIVE|POTENTIAL)') { $Matches[1] } else { 'UNKNOWN' }"') do set "VERDICT=%%v"
+    if "!VERDICT!"=="CONFIRMED"      set /a "CONFIRMED+=1"
+    if "!VERDICT!"=="FALSE POSITIVE" set /a "FALSE_POSITIVE+=1"
+    if "!VERDICT!"=="POTENTIAL"      set /a "POTENTIAL+=1"
 
     :: 累計 token 用量
     if exist "!V_USAGE!" (

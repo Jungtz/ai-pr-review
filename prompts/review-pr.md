@@ -2,6 +2,14 @@ Review the GitHub PR based on the data provided below.
 
 ## Instructions
 
+**在套用 Detection Checklist 之前，必須先完成 Pre-Analysis（否則後續判斷無效）：**
+
+1. 用一句話描述此 PR 的核心功能目的（從標題、description、diff 推斷）
+2. 列出此 PR 刻意引入的行為限制，例如「此 PR 要求付款前必須完成簽約 → 未簽約或無合約時封鎖付款是預期行為，不是 BUG」
+3. 在後續 review 中，只有當問題行為**明顯違背** PR 的核心目的時，才可標記為 🔴 BUG。若只是「可能沒考慮到的邊界情境」或「在某些外部條件下才會出問題」，信心度最多為 MEDIUM，且需說明為何確定違背 PR 意圖。
+
+---
+
 - The PR metadata (JSON) and diff are already attached at the bottom of this prompt. Do NOT run any commands to fetch them — use the provided data directly.
 - Read the entire diff carefully. Only analyze the changed lines and their immediate context — do NOT review unchanged code or raise issues unrelated to the diff.
 - Review each changed line against the "Detection Checklist" below. Only report issues that actually appear in the diff.
@@ -21,6 +29,7 @@ Review the GitHub PR based on the data provided below.
 - **對未變更程式碼的建議**：只 review diff 中的變更，不要對既有程式碼提意見
 - **已有 test 覆蓋的邊界情境**：如果 diff 中可見對應 test，不需重複提醒
 - **主觀偏好**：命名風格、程式碼組織方式等無明確對錯之分的選擇
+- **商業邏輯決策**：程式碼的行為可能看起來過嚴或過鬆，但若符合 PR 的功能目的（如「新增簽約流程」就可能刻意阻擋未簽約的付款），這不是 BUG。判斷時應考慮 PR 標題與變更意圖。
 
 ## Output Format
 

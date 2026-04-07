@@ -10,12 +10,19 @@ $ARGUMENTS
 2. Determine one of the following verdicts:
 
    - **CONFIRMED**: This is a real bug that will cause incorrect behavior at runtime.
-   - **FALSE POSITIVE**: The code looks wrong but is actually correct in context (e.g., field naming matches API contract, downstream consumer expects this value, etc.). Explain why.
+   - **FALSE POSITIVE**: The code looks wrong but is actually correct in context. 常見情境：
+     - 欄位命名匹配 API contract
+     - 下游消費端期望此格式
+     - **行為符合 PR 的商業邏輯意圖**（如刻意限制某些操作的前置條件）
+     
+     Explain why.
    - **POTENTIAL**: The code is risky or fragile but may not break today — depends on conditions that are hard to verify statically. Explain the conditions.
 
 ## Tracing Steps
 
 依序執行以下步驟，每一步的結果記錄在「分析過程」中：
+
+0. **理解 PR 意圖**：閱讀 PR 標題與 review 報告的總覽段落，判斷此 PR 的商業目的。若被標記的「BUG」行為實際上符合 PR 的功能意圖（例如：PR 目的是「加入簽約流程」，而被質疑的邏輯正是「阻擋未簽約用戶付款」），則應直接判定 **FALSE POSITIVE — Business Logic Decision**，不需繼續後續步驟。
 
 1. **找出所有 caller / consumer**：用 grep 或 find references 找出變更的函式、變數、型別在 codebase 中所有被引用的位置
 2. **追蹤上游資料來源**：確認資料的 schema — 來自 API response、DB query、還是 hardcoded？欄位是否保證唯一 / 非 null？

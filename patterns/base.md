@@ -14,7 +14,8 @@
   ```
   </example>
 
-- **Condition logic error**: 條件判斷反轉（`&&` vs `||`）、缺少 else/default branch、或否定條件寫反
+- **Condition logic error**: 條件判斷反轉（`&&` vs `||`）、缺少 else/default branch、或否定條件寫反。
+  **注意：若條件行為與 PR 的功能目的一致（例如 PR 新增權限檢查，條件刻意變嚴），應視為刻意設計（Business Logic），不是 BUG。**
 
   <example>
   ❌ 有問題：
