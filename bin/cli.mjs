@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPTS_DIR = join(SCRIPT_DIR, 'prompts');
-const PATTERNS_DIR = join(SCRIPT_DIR, 'patterns');
 const RESULTS_DIR = join(SCRIPT_DIR, 'results');
 const API_CONFIG = join(SCRIPT_DIR, '.api-config');
 
@@ -337,22 +336,10 @@ async function cmdReview() {
   console.log(`   ✓ ${diffLines} 行 diff (${Math.floor((Date.now() - stepStart) / 1000)}s)`);
   console.log('');
 
-  // Detect languages from diff and assemble patterns
+  // Load detection patterns
   const stepStart2 = Date.now();
   console.log('🔧 [2/3] 準備分析資料...');
-  const langExt = {
-    javascript: /^\+\+\+ b\/.*\.(js|ts|tsx|jsx|mjs|cjs)$/m,
-    python: /^\+\+\+ b\/.*\.py$/m,
-    go: /^\+\+\+ b\/.*\.go$/m,
-    php: /^\+\+\+ b\/.*\.php$/m,
-  };
-  const detected = Object.entries(langExt).filter(([, re]) => re.test(prDiff)).map(([l]) => l);
-  let patterns = readFileSync(join(PATTERNS_DIR, 'base.md'), 'utf8');
-  for (const lang of detected) {
-    const p = join(PATTERNS_DIR, `${lang}.md`);
-    if (existsSync(p)) patterns += '\n\n' + readFileSync(p, 'utf8');
-  }
-  console.log(detected.length ? `   ✓ 偵測語言: ${detected.join(' ')}` : '   ✓ 使用通用 patterns');
+  const patterns = readFileSync(join(PROMPTS_DIR, 'patterns.md'), 'utf8');
 
   let promptTemplate = readFileSync(join(PROMPTS_DIR, 'review-pr.md'), 'utf8');
   promptTemplate = promptTemplate.split('{{PATTERNS}}').join(patterns);

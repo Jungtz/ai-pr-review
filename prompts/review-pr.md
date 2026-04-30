@@ -17,6 +17,7 @@ Review the GitHub PR based on the data provided below.
 在後續 review 中：
 - 若問題行為**符合 PR 意圖**（即便看起來限制過嚴），不是 BUG
 - 只有**明顯違背** PR 核心目的的問題，才可標記為 🔴 BUG
+- 每個問題都必須明確給定 **HIGH/MEDIUM/LOW 信心度**。
 
 ## Severity Classification
 
@@ -40,8 +41,6 @@ Review the GitHub PR based on the data provided below.
 - 「未來如果 X 改了會出問題」→ 未來風險 ≠ 當前 BUG
 
 ## Detection Checklist
-
-> Detection Checklist 中的燈號為預設建議，最終嚴重度仍依上方 Severity Classification 條件判定。
 
 {{PATTERNS}}
 

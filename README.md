@@ -30,13 +30,8 @@ ai-pr-review/
 │   └── cli.mjs          # 實際邏輯（Node 18+，零依賴）
 ├── prompts/
 │   ├── review-pr.md     # Review prompt 模板（含 {{PATTERNS}} 佔位符）
-│   └── verify-bug.md    # BUG 驗證 prompt 模板
-├── patterns/
-│   ├── base.md          # 通用 patterns（語言無關）
-│   ├── javascript.md    # JavaScript/TypeScript patterns
-│   ├── python.md        # Python patterns
-│   ├── go.md            # Go patterns
-│   └── php.md           # PHP patterns
+│   ├── verify-bug.md    # BUG 驗證 prompt 模板
+│   └── patterns.md      # 通用 detection patterns（跨語言）
 └── results/             # 輸出報告（.gitignore）
     ├── PR_*_.md         # Review 報告
     └── PR_*_verify.md   # 驗證報告
@@ -82,7 +77,7 @@ review-pr.bat
         ↓
 📡 自動取得 PR 資訊 + diff（via gh CLI）
         ↓
-🔧 從 diff 副檔名偵測語言 → 載入對應 patterns
+🔧 載入通用 detection patterns
         ↓
 🤖 AI 分析（區分商業邏輯意圖，優化 BUG 判定） → 產出 review 報告
         ↓
@@ -135,28 +130,15 @@ Review 報告儲存為 `PR_{number}_{timestamp}.md`，包含：
 
 ## Detection Patterns
 
-腳本會自動從 diff 的檔案副檔名偵測程式語言，載入對應的 pattern 檔：
+`prompts/patterns.md` 定義了通用的 detection checklist（邊界條件、邏輯錯誤、race condition、資源洩漏、安全問題等）。
 
-| 副檔名 | Pattern 檔 |
-|--------|-----------|
-| `.js` `.ts` `.tsx` `.jsx` `.mjs` `.cjs` | `patterns/javascript.md` |
-| `.py` | `patterns/python.md` |
-| `.go` | `patterns/go.md` |
-| `.php` | `patterns/php.md` |
-
-`patterns/base.md` 永遠載入（通用 patterns：邊界條件、邏輯錯誤、資源洩漏、安全問題等）。
-
-### 新增語言
-
-在 `patterns/` 目錄新增一個 `{language}.md`，然後在腳本中加入對應的副檔名偵測即可。
-
-Pattern 檔格式參考既有檔案，依 🔴 BUG / 🟡 WARN / 🟢 NIT 分級，每個 pattern 包含說明和 example。
+語言特定的 pattern 不需要額外維護 — AI 本身已具備各語言的深度知識，通用 checklist 足以引導分析方向。
 
 ## 自訂 Prompt
 
-- `prompts/review-pr.md` — Review 主模板，`{{PATTERNS}}` 佔位符會被腳本自動替換為偵測到的 patterns
+- `prompts/review-pr.md` — Review 主模板，`{{PATTERNS}}` 佔位符會被替換為 `prompts/patterns.md` 的內容
 - `prompts/verify-bug.md` — BUG 驗證 prompt 模板
-- `patterns/*.md` — 各語言的檢測規則，可自由新增或修改
+- `prompts/patterns.md` — 通用 detection checklist，可自由修改
 - `bin/cli.mjs` — 實際的 Node 邏輯（review / verify 兩個 sub-command）
 
 ## License

@@ -1,4 +1,4 @@
-### 🔴 BUG-level patterns
+### 通用 Code Smell & Anti-patterns
 
 - **Off-by-one / boundary error**: 迴圈或 slice 的邊界條件錯誤，導致多取或少取一筆資料
 
@@ -40,8 +40,6 @@
 
 - **Hardcoded secret / credential**: 程式碼中直接寫入 API key、密碼、token 等敏感資訊
 
-### 🟡 WARN-level patterns
-
 - **Duplicated logic**: 相同的邏輯出現在多處，應抽成共用函式
 
 - **Inconsistent error handling**: 同一類操作在某些地方有錯誤處理，但在其他地方沒有
@@ -49,8 +47,6 @@
 - **Magic number / string**: 程式碼中直接使用未命名的常數值，語意不明
 
 - **Naming inconsistency**: 同一概念在不同檔案使用不同名稱
-
-### 🟢 NIT-level patterns
 
 - Deprecated 程式碼用註解包起來而非刪除（git history 可還原）
 - 殘留的 debug 語句（console.log、print、fmt.Println 等）

@@ -1,9 +1,5 @@
 You are verifying a potential BUG flagged by a PR review. Your job is to read the actual codebase and determine whether this is a **real bug** or a **false positive**.
 
-## The issue to verify
-
-$ARGUMENTS
-
 ## Instructions
 
 1. Follow the "Tracing Steps" below to systematically investigate the issue.
