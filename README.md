@@ -22,21 +22,15 @@ gh auth login
 
 ```
 ai-pr-review/
-├── review-pr.command    # macOS 主程式
-├── review-pr.bat        # Windows 主程式
-├── verify-bug.command   # macOS BUG 驗證
-├── verify-bug.bat       # Windows BUG 驗證
-├── evolve.command       # macOS Pattern 進化
-├── evolve.bat           # Windows Pattern 進化
-├── lib/
-│   ├── common.sh        # 共用工具函式（bash）
-│   ├── common.bat       # 共用工具函式（Windows）
-│   ├── api-helper.sh    # API 呼叫輔助（bash）
-│   └── api-helper.ps1   # API 呼叫輔助（PowerShell）
+├── review-pr.command    # macOS 主程式（雙擊啟動，wrapper）
+├── review-pr.bat        # Windows 主程式（雙擊啟動，wrapper）
+├── verify-bug.command   # macOS BUG 驗證（wrapper）
+├── verify-bug.bat       # Windows BUG 驗證（wrapper）
+├── bin/
+│   └── cli.mjs          # 實際邏輯（Node 18+，零依賴）
 ├── prompts/
 │   ├── review-pr.md     # Review prompt 模板（含 {{PATTERNS}} 佔位符）
-│   ├── verify-bug.md    # BUG 驗證 prompt 模板
-│   └── evolve.md        # Pattern 進化 prompt 模板
+│   └── verify-bug.md    # BUG 驗證 prompt 模板
 ├── patterns/
 │   ├── base.md          # 通用 patterns（語言無關）
 │   ├── javascript.md    # JavaScript/TypeScript patterns
@@ -45,9 +39,10 @@ ai-pr-review/
 │   └── php.md           # PHP patterns
 └── results/             # 輸出報告（.gitignore）
     ├── PR_*_.md         # Review 報告
-    ├── PR_*_verify.md   # 驗證報告
-    └── evolve_*.md       # Pattern 進化建議
+    └── PR_*_verify.md   # 驗證報告
 ```
+
+> 前置依賴：`node` (>= 18)、`gh` CLI；視所選引擎還需 `claude` 或 `opencode` 或 `curl`。
 
 ## 使用方式
 
@@ -157,35 +152,12 @@ Review 報告儲存為 `PR_{number}_{timestamp}.md`，包含：
 
 Pattern 檔格式參考既有檔案，依 🔴 BUG / 🟡 WARN / 🟢 NIT 分級，每個 pattern 包含說明和 example。
 
-### Pattern 進化（evolve）
-
-累積足夠的 review + verify 報告後，可執行 evolve 腳本讓 AI 分析歷史數據，自動產出 pattern 改善建議：
-
-```
-📊 掃描 results/ 所有歷史報告
-        ↓
-🔍 統計每個 pattern 的命中率 / 誤報率
-        ↓
-🔎 找出 CONFIRMED bug 中不屬於任何現有 pattern 的案例
-        ↓
-🤖 AI 分析 → 產出建議
-   - 🆕 建議新增的 patterns
-   - ✏️ 建議修改的 patterns
-   - 🗑️ 建議移除的 patterns
-        ↓
-📝 輸出建議報告，人工確認後手動套用
-```
-
-macOS：`./evolve.command`　Windows：`evolve.bat`
-
 ## 自訂 Prompt
 
 - `prompts/review-pr.md` — Review 主模板，`{{PATTERNS}}` 佔位符會被腳本自動替換為偵測到的 patterns
 - `prompts/verify-bug.md` — BUG 驗證 prompt 模板
-- `prompts/evolve.md` — Pattern 進化 prompt 模板
 - `patterns/*.md` — 各語言的檢測規則，可自由新增或修改
-- `lib/common.sh` / `lib/common.bat` — 共用工具函式（計時器、spinner）
-- `lib/api-helper.sh` / `lib/api-helper.ps1` — API 呼叫輔助
+- `bin/cli.mjs` — 實際的 Node 邏輯（review / verify 兩個 sub-command）
 
 ## License
 
