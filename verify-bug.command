@@ -266,12 +266,14 @@ EOF
 
   # 統計結果
   VERIFIED=$((VERIFIED + 1))
-  VERDICT=$(echo "$RESULT" | grep -oE '結論[：:][[:space:]]*(CONFIRMED|FALSE POSITIVE|POTENTIAL)' | head -1)
-  case "$VERDICT" in
-    *CONFIRMED*)      CONFIRMED=$((CONFIRMED + 1)) ;;
-    *FALSE\ POSITIVE*) FALSE_POSITIVE=$((FALSE_POSITIVE + 1)) ;;
-    *POTENTIAL*)      POTENTIAL=$((POTENTIAL + 1)) ;;
-  esac
+  VERDICT_LINE=$(echo "$RESULT" | grep -E '結論' | head -1)
+  if echo "$VERDICT_LINE" | grep -qE 'FALSE[[:space:]]+POSITIVE'; then
+    FALSE_POSITIVE=$((FALSE_POSITIVE + 1))
+  elif echo "$VERDICT_LINE" | grep -qE 'CONFIRMED'; then
+    CONFIRMED=$((CONFIRMED + 1))
+  elif echo "$VERDICT_LINE" | grep -qE 'POTENTIAL'; then
+    POTENTIAL=$((POTENTIAL + 1))
+  fi
 
   # 累計 token 用量
   if [ -f "${TMPFILE}.usage" ]; then

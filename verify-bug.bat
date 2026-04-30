@@ -299,7 +299,11 @@ for %%f in ("%BUG_DIR%\bug_*.txt") do (
     set /a "VERIFIED+=1"
     for /f "delims=" %%v in ('powershell -NoProfile -Command ^
         "$c = Get-Content -Raw '!V_TMPFILE!';" ^
-        "if ($c -match '結論[：:]\\s*(CONFIRMED|FALSE POSITIVE|POTENTIAL)') { $Matches[1] } else { 'UNKNOWN' }"') do set "VERDICT=%%v"
+        "$line = ($c -split \"`n\" ^| Where-Object { $_ -match '結論' } ^| Select-Object -First 1);" ^
+        "if ($line -match 'FALSE\s+POSITIVE') { 'FALSE POSITIVE' }" ^
+        "elseif ($line -match 'CONFIRMED') { 'CONFIRMED' }" ^
+        "elseif ($line -match 'POTENTIAL') { 'POTENTIAL' }" ^
+        "else { 'UNKNOWN' }"') do set "VERDICT=%%v"
     if "!VERDICT!"=="CONFIRMED"      set /a "CONFIRMED+=1"
     if "!VERDICT!"=="FALSE POSITIVE" set /a "FALSE_POSITIVE+=1"
     if "!VERDICT!"=="POTENTIAL"      set /a "POTENTIAL+=1"
