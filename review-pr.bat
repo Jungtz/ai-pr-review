@@ -288,8 +288,8 @@ for /f "delims=" %%a in ('powershell -NoProfile -Command ^
 if %BUG_COUNT% gtr 0 (
     echo.
     echo 🔍 發現 %BUG_COUNT% 個 🔴 BUG 級問題
-    set "VERIFY=N"
-    set /p "VERIFY=是否進行深度驗證？ [y/N]: "
+    set "VERIFY=Y"
+    set /p "VERIFY=是否進行深度驗證？ [Y/n]: "
     if /i "!VERIFY!"=="y" (
         :: 傳遞引擎選擇給 verify-bug
         if "%ENGINE_CHOICE%"=="1" set "PR_REVIEW_ENGINE=claude"

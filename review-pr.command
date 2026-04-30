@@ -264,8 +264,8 @@ BUG_COUNT=${BUG_COUNT:-0}
 if [ "$BUG_COUNT" -gt 0 ]; then
   echo ""
   echo "🔍 發現 ${BUG_COUNT} 個 🔴 BUG 級問題"
-  read -r -p "是否進行深度驗證？ [y/N]: " VERIFY
-  VERIFY=${VERIFY:-N}
+  read -r -p "是否進行深度驗證？ [Y/n]: " VERIFY
+  VERIFY=${VERIFY:-Y}
   if [[ "$VERIFY" =~ ^[Yy]$ ]]; then
     # 傳遞引擎選擇給 verify-bug
     case "$ENGINE_CHOICE" in
