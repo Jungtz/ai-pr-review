@@ -1,9 +1,11 @@
-You are verifying a potential BUG flagged by a PR review. Your job is to read the actual codebase and determine whether this is a **real bug** or a **false positive**.
+You are verifying potential BUGs flagged by a PR review. Your job is to read the actual codebase and determine whether each is a **real bug** or a **false positive**.
+
+底部可能附有**一個或多個**待驗證問題（`### 問題 N`）。請**逐一**驗證每個問題，各自輸出一個獨立的 `### 驗證：` 區段。共用的 codebase 探索（grep / 讀檔）可一次完成、跨問題重用，不必為每個問題重新讀取。
 
 ## Instructions
 
-1. Follow the "Tracing Steps" below to systematically investigate the issue.
-2. Determine one of the following verdicts:
+1. Follow the "Tracing Steps" below to systematically investigate each issue.
+2. For each issue, determine one of the following verdicts:
 
    - **CONFIRMED**: This is a real bug that will cause incorrect behavior at runtime.
    - **FALSE POSITIVE**: The code looks wrong but is actually correct in context. 常見情境：
@@ -31,6 +33,8 @@ You are verifying a potential BUG flagged by a PR review. Your job is to read th
 ## Output Format
 
 All output MUST be in Traditional Chinese. Keep code snippets, file paths, and technical terms in English.
+
+**每個問題輸出一個獨立區段，格式如下。多個問題就重複多個區段。**
 
 ### 驗證：[問題標題]
 

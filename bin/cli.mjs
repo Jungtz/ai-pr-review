@@ -100,6 +100,57 @@ function tmpFile(ext = '') {
   return join(dir, `tmp${ext}`);
 }
 
+// ── Diff trimming (token 節省) ─────────────────────────────
+
+const MAX_DIFF_LINES = 3000;
+
+// 對 review 無價值、卻大量佔用 token 的檔案：lockfile / 產生檔 / 壓縮檔 / snapshot
+const DIFF_EXCLUDE_PATTERNS = [
+  /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|composer\.lock|Gemfile\.lock|Cargo\.lock|poetry\.lock|go\.sum)$/,
+  /\.min\.(js|css)$/,
+  /\.map$/,
+  /(^|\/)(dist|build|out|vendor|node_modules|\.next|coverage)\//,
+  /(^|\/)__snapshots__\//,
+  /\.snap$/,
+];
+
+/**
+ * 依 `diff --git` 邊界切檔，丟棄無 review 價值的檔案。
+ * @param {string} diff
+ * @returns {{ diff: string, excluded: string[] }}
+ */
+function filterDiff(diff) {
+  const parts = diff.split(/(?=^diff --git )/m);
+  const kept = [];
+  const excluded = [];
+  for (const part of parts) {
+    if (!part.startsWith('diff --git')) {
+      if (part) kept.push(part); // 前導內容（通常為空）
+      continue;
+    }
+    const m = part.match(/^diff --git a\/\S+ b\/(\S+)/);
+    const path = m ? m[1] : '';
+    if (path && DIFF_EXCLUDE_PATTERNS.some(re => re.test(path))) {
+      excluded.push(path);
+    } else {
+      kept.push(part);
+    }
+  }
+  return { diff: kept.join(''), excluded };
+}
+
+/**
+ * 超大 diff 截斷，避免單次燒掉大量 token。
+ * @param {string} diff
+ * @param {number} max
+ * @returns {{ diff: string, truncated: number }}
+ */
+function capDiff(diff, max = MAX_DIFF_LINES) {
+  const lines = diff.split('\n');
+  if (lines.length <= max) return { diff, truncated: 0 };
+  return { diff: lines.slice(0, max).join('\n'), truncated: lines.length - max };
+}
+
 // ── API config cache ──────────────────────────────────────
 
 function loadApiConfig() {
@@ -329,11 +380,23 @@ async function cmdReview() {
     return;
   }
   const prMeta = JSON.parse(metaRes.stdout);
-  const prDiff = diffRes.stdout;
+  const rawDiff = diffRes.stdout;
   console.log(`   ✓ ${prMeta.title}`);
   console.log(`   ✓ ${prMeta.changedFiles} 個檔案 | +${prMeta.additions} -${prMeta.deletions}`);
+
+  // 過濾無價值檔案 + 超大 diff 截斷（節省 token）
+  const { diff: filteredDiff, excluded } = filterDiff(rawDiff);
+  const { diff: prDiff, truncated } = capDiff(filteredDiff);
+
+  const rawLines = rawDiff.split('\n').length;
   const diffLines = prDiff.split('\n').length;
   console.log(`   ✓ ${diffLines} 行 diff (${Math.floor((Date.now() - stepStart) / 1000)}s)`);
+  if (excluded.length) {
+    console.log(`   ⏭  已排除 ${excluded.length} 個檔案: ${excluded.slice(0, 5).join(', ')}${excluded.length > 5 ? ' …' : ''}`);
+  }
+  if (truncated) {
+    console.log(`   ✂  diff 過長，已截斷 ${fmtNum(truncated)} 行（原 ${fmtNum(rawLines)} 行）`);
+  }
   console.log('');
 
   // Load detection patterns
@@ -343,8 +406,18 @@ async function cmdReview() {
 
   let promptTemplate = readFileSync(join(PROMPTS_DIR, 'review-pr.md'), 'utf8');
   promptTemplate = promptTemplate.split('{{PATTERNS}}').join(patterns);
-  const prompt = `${promptTemplate}
 
+  const notes = [];
+  if (excluded.length) {
+    notes.push(`已省略 ${excluded.length} 個非程式碼/產生檔（lockfile、min、dist、snapshot 等），不需 review：${excluded.join(', ')}`);
+  }
+  if (truncated) {
+    notes.push(`diff 過長，已截斷末尾 ${truncated} 行，僅就前 ${MAX_DIFF_LINES} 行進行 review。`);
+  }
+  const notesBlock = notes.length ? `\n## Diff 處理備註\n\n${notes.map(n => `- ${n}`).join('\n')}\n` : '';
+
+  const prompt = `${promptTemplate}
+${notesBlock}
 ## PR Metadata (JSON)
 \`\`\`json
 ${metaRes.stdout.trim()}
@@ -448,13 +521,16 @@ function extractBugBlocks(reportText) {
   return blocks;
 }
 
-function classifyVerdict(resultText) {
-  const verdictLine = resultText.split('\n').find(l => /結論/.test(l));
-  if (!verdictLine) return null;
-  if (/FALSE\s+POSITIVE/.test(verdictLine)) return 'FALSE_POSITIVE';
-  if (/CONFIRMED/.test(verdictLine)) return 'CONFIRMED';
-  if (/POTENTIAL/.test(verdictLine)) return 'POTENTIAL';
-  return null;
+// 掃描所有「結論」行，統計各判定數量（支援單次批次驗證多個問題的輸出）。
+function countVerdicts(resultText) {
+  const counts = { CONFIRMED: 0, FALSE_POSITIVE: 0, POTENTIAL: 0 };
+  for (const line of resultText.split('\n')) {
+    if (!/結論/.test(line)) continue;
+    if (/FALSE\s+POSITIVE/.test(line)) counts.FALSE_POSITIVE++;
+    else if (/CONFIRMED/.test(line)) counts.CONFIRMED++;
+    else if (/POTENTIAL/.test(line)) counts.POTENTIAL++;
+  }
+  return counts;
 }
 
 async function cmdVerify(reportFileArg, projectDirArg) {
@@ -538,27 +614,36 @@ async function cmdVerify(reportFileArg, projectDirArg) {
   let out = `## 🔍 BUG 驗證報告\n\n來源報告: \`${basename(reportFile)}\`\n\n`;
 
   const promptTemplate = readFileSync(join(PROMPTS_DIR, 'verify-bug.md'), 'utf8');
-  let confirmed = 0, falsePositive = 0, potential = 0, verified = 0;
-  const totalUsage = { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
 
-  for (let i = 0; i < blocks.length; i++) {
-    if (selection !== 'a' && selection !== String(i + 1)) continue;
-    const block = blocks[i];
-    const title = block.split('\n')[0].replace(/^#+\s*/, '').replace(/🔴\s*/, '').replace(/\*/g, '');
-    console.log(`   [${i + 1}/${blocks.length}] ${title}`);
-    const prompt = `${promptTemplate}\n\n## The issue to verify\n\n${block}\n`;
-    const { text, usage } = await withSpinner(`驗證問題 ${i + 1}`, runEngine(engine, prompt, projectDir));
-    verified++;
-    const verdict = classifyVerdict(text);
-    if (verdict === 'CONFIRMED') confirmed++;
-    else if (verdict === 'FALSE_POSITIVE') falsePositive++;
-    else if (verdict === 'POTENTIAL') potential++;
-    totalUsage.input_tokens += usage.input_tokens;
-    totalUsage.output_tokens += usage.output_tokens;
-    totalUsage.cost_usd += usage.cost_usd;
-    out += `${text}\n\n---\n\n`;
-    console.log('');
+  const titleOf = b => b.split('\n')[0].replace(/^#+\s*/, '').replace(/🔴\s*/, '').replace(/\*/g, '');
+  const selected = blocks
+    .map((block, i) => ({ block, i }))
+    .filter(({ i }) => selection === 'a' || selection === String(i + 1));
+
+  if (!selected.length) {
+    console.log(`   ❌ 無效的選擇: ${selection}`);
+    if (cloneCleanup) rmSync(projectDir, { recursive: true, force: true });
+    return;
   }
+
+  // 單次批次驗證：所有選定問題合併成一個 prompt，共用 codebase 讀取以節省 token。
+  const issuesBlock = selected
+    .map(({ block }, n) => `### 問題 ${n + 1}：${titleOf(block)}\n\n${block}`)
+    .join('\n\n---\n\n');
+  const prompt = `${promptTemplate}\n\n## The issues to verify（共 ${selected.length} 個，逐一驗證）\n\n${issuesBlock}\n`;
+
+  selected.forEach(({ block }, n) => console.log(`   [${n + 1}/${selected.length}] ${titleOf(block)}`));
+  console.log('');
+  const { text, usage } = await withSpinner(`驗證 ${selected.length} 個問題`, runEngine(engine, prompt, projectDir));
+  console.log('');
+
+  const vc = countVerdicts(text);
+  const confirmed = vc.CONFIRMED;
+  const falsePositive = vc.FALSE_POSITIVE;
+  const potential = vc.POTENTIAL;
+  const verified = selected.length;
+  const totalUsage = { ...usage };
+  out += `${text}\n\n---\n\n`;
 
   const totalSec = Math.floor((Date.now() - totalStart) / 1000);
   out += [
