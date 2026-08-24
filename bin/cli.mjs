@@ -106,6 +106,28 @@ function fmtNum(n) {
   return Number(n).toLocaleString('en-US');
 }
 
+/**
+ * 擷取外部指令輸出片段，供錯誤訊息使用（避免整份 log 灌爆終端）。
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+function excerpt(text, max = 500) {
+  const t = String(text || '').trim();
+  if (!t) return '';
+  return t.length > max ? `${t.slice(0, max)} …（已截斷）` : t;
+}
+
+/**
+ * 將 stderr 附加到錯誤訊息；沒有內容時回傳空字串。
+ * @param {string} stderr
+ * @returns {string}
+ */
+function stderrNote(stderr) {
+  const t = excerpt(stderr);
+  return t ? `\n   stderr: ${t}` : '';
+}
+
 async function withSpinner(label, promise) {
   const chars = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
   const start = Date.now();
@@ -128,7 +150,7 @@ async function withSpinner(label, promise) {
   } catch (e) {
     done = true;
     clearInterval(timer);
-    process.stdout.write('\r');
+    process.stdout.write(`\r${' '.repeat(label.length + 24)}\r`);
     throw e;
   }
 }
@@ -229,12 +251,23 @@ async function promptApiSettings() {
 // Each engine returns { text, usage: { input_tokens, output_tokens, cost_usd } }
 
 async function runClaude(model, prompt, cwd) {
-  const { stdout } = await sh('claude', ['-p', '--model', model, '--output-format', 'json'], {
+  const { code, stdout, stderr } = await sh('claude', ['-p', '--model', model, '--output-format', 'json'], {
     input: prompt,
     cwd,
     captureStderr: true,
   });
-  const json = JSON.parse(stdout);
+  if (code !== 0) {
+    throw new Error(`claude 執行失敗（exit ${code}）${stderrNote(stderr)}`);
+  }
+  let json;
+  try {
+    json = JSON.parse(stdout);
+  } catch {
+    throw new Error(`claude 輸出非預期的 JSON：${excerpt(stdout) || '(空輸出)'}${stderrNote(stderr)}`);
+  }
+  if (json.is_error) {
+    throw new Error(`claude 回報錯誤：${excerpt(json.result) || '(無訊息)'}${stderrNote(stderr)}`);
+  }
   return {
     text: json.result || '',
     usage: {
@@ -246,25 +279,34 @@ async function runClaude(model, prompt, cwd) {
 }
 
 async function runOpencode(prompt, cwd) {
-  const { stdout } = await sh('opencode', ['run', '--format', 'json', prompt], { cwd });
-  const lines = stdout.split('\n').filter(Boolean);
+  const { code, stdout, stderr } = await sh('opencode', ['run', '--format', 'json', prompt], { input: prompt, cwd, captureStderr: true });
+  if (code !== 0) {
+    throw new Error(`opencode 執行失敗（exit ${code}）${stderrNote(stderr)}`);
+  }
   let text = '';
-  let lastStep = null;
-  for (const line of lines) {
+  let sawEvent = false;
+  const usage = { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
     let obj;
     try { obj = JSON.parse(line); } catch { continue; }
+    sawEvent = true;
     if (obj.type === 'text') text += obj.part?.text || '';
-    if (obj.type === 'step_finish') lastStep = obj.part;
+    // 多步驟 session 會有多個 step_finish，需累計而非只取最後一個
+    if (obj.type === 'step_finish') {
+      const t = obj.part?.tokens || {};
+      usage.input_tokens += t.input || 0;
+      usage.output_tokens += t.output || 0;
+      usage.cost_usd += obj.part?.cost || 0;
+    }
   }
-  const t = lastStep?.tokens || {};
-  return {
-    text,
-    usage: {
-      input_tokens: t.input || 0,
-      output_tokens: t.output || 0,
-      cost_usd: lastStep?.cost || 0,
-    },
-  };
+  if (!sawEvent) {
+    throw new Error(`opencode 未輸出可解析的 JSON 事件：${excerpt(stdout) || '(空輸出)'}${stderrNote(stderr)}`);
+  }
+  if (!text.trim()) {
+    throw new Error(`opencode 未回傳任何文字內容${stderrNote(stderr)}`);
+  }
+  return { text, usage };
 }
 
 async function runOpenAICompat({ API_BASE, API_KEY, API_MODEL }, prompt) {
