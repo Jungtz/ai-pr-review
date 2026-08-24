@@ -211,10 +211,44 @@ function capDiff(diff, max = MAX_DIFF_LINES) {
   return { diff: lines.slice(0, max).join('\n'), truncated: lines.length - max };
 }
 
+// ── 推理強度 ──────────────────────────────────────────────
+
+// Claude Code `--effort` 由弱到強。
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+// opencode `--variant` 的可用值依 provider 而異，這裡只列常見的排序基準；
+// 不在清單中的自訂值一律原樣傳給 opencode，不做調整。
+const OPENCODE_VARIANT_LEVELS = ['minimal', 'low', 'medium', 'high', 'max'];
+// review 預設強度；驗證階段的下限也是同一級，即驗證只升模型、不再往上加碼。
+const DEFAULT_EFFORT = 'high';
+const VERIFY_MIN_EFFORT = 'high';
+
+/**
+ * 把強度補到下限：低於下限則拉到下限，已達或更高則維持原值（不降級）。
+ * 不在階梯清單中的自訂值無從比較，原樣返回。
+ * @param {string} level
+ * @param {string[]} levels 由弱到強的階梯
+ * @param {string} floor
+ * @returns {string}
+ */
+function raiseToFloor(level, levels, floor) {
+  const current = levels.indexOf(level);
+  const min = levels.indexOf(floor);
+  if (current < 0 || min < 0) return level;
+  return current < min ? floor : level;
+}
+
 // ── API config cache ──────────────────────────────────────
 
 function loadApiConfig() {
-  const cfg = { API_BASE: 'http://localhost:11434/v1', API_KEY: '', API_MODEL: 'llama3', ENGINE: '' };
+  const cfg = {
+    API_BASE: 'http://localhost:11434/v1',
+    API_KEY: '',
+    API_MODEL: 'llama3',
+    ENGINE: '',
+    CLAUDE_EFFORT: DEFAULT_EFFORT,
+    OPENCODE_MODEL: '',
+    OPENCODE_VARIANT: DEFAULT_EFFORT,
+  };
   if (existsSync(API_CONFIG)) {
     for (const line of readFileSync(API_CONFIG, 'utf8').split('\n')) {
       const m = line.match(/^([A-Z_]+)=(.*)$/);
@@ -225,7 +259,7 @@ function loadApiConfig() {
 }
 
 function saveApiConfig(cfg) {
-  const lines = ['API_BASE', 'API_KEY', 'API_MODEL', 'ENGINE']
+  const lines = ['API_BASE', 'API_KEY', 'API_MODEL', 'ENGINE', 'CLAUDE_EFFORT', 'OPENCODE_MODEL', 'OPENCODE_VARIANT']
     .filter(k => cfg[k] !== undefined && cfg[k] !== '')
     .map(k => `${k}=${cfg[k]}`);
   writeFileSync(API_CONFIG, lines.join('\n') + '\n');
@@ -239,6 +273,7 @@ function maskKey(k) {
 
 async function promptApiSettings() {
   const cfg = loadApiConfig();
+  console.log(`   ⚠️  設定會以明文存於 ${API_CONFIG}（已列入 .gitignore），請勿填入不該落地的金鑰`);
   const base = await ask(`API Base URL [${cfg.API_BASE}]: `, cfg.API_BASE);
   const key = await ask(`API Key [${maskKey(cfg.API_KEY)}]: `, cfg.API_KEY);
   const model = await ask(`Model 名稱 [${cfg.API_MODEL}]: `, cfg.API_MODEL);
@@ -247,11 +282,52 @@ async function promptApiSettings() {
   return next;
 }
 
+/**
+ * 詢問 Claude Code 的 effort（思考深度）。
+ * @returns {Promise<{ effort: string }>}
+ */
+async function promptClaudeSettings() {
+  const cfg = loadApiConfig();
+  console.log('   （直接 Enter 沿用先前設定）');
+  const input = await ask(`思考深度 effort（${EFFORT_LEVELS.join(' / ')}）[${cfg.CLAUDE_EFFORT}]: `, cfg.CLAUDE_EFFORT);
+  const picked = input.trim().toLowerCase();
+  const effort = EFFORT_LEVELS.includes(picked) ? picked : DEFAULT_EFFORT;
+  if (picked !== effort) console.log(`   ⚠️  無效的 effort「${input.trim()}」，改用 ${effort}`);
+  saveApiConfig({ ...cfg, CLAUDE_EFFORT: effort });
+  return { effort };
+}
+
+/**
+ * 詢問 opencode 的模型與推理強度；留空則沿用 opencode 自身設定檔預設值。
+ * @returns {Promise<{ model: string, variant: string }>}
+ */
+async function promptOpencodeSettings() {
+  const cfg = loadApiConfig();
+  console.log('   （直接 Enter 沿用先前設定；模型留空則使用 opencode 設定檔預設值）');
+  const model = await ask(`模型 provider/model [${cfg.OPENCODE_MODEL || '(opencode 預設)'}]: `, cfg.OPENCODE_MODEL);
+  const input = await ask(`推理強度 variant（${OPENCODE_VARIANT_LEVELS.join(' / ')}）[${cfg.OPENCODE_VARIANT}]: `, cfg.OPENCODE_VARIANT);
+  const variant = input.trim().toLowerCase();
+  if (variant && !OPENCODE_VARIANT_LEVELS.includes(variant)) {
+    console.log(`   ⚠️  「${variant}」不在常見清單中，將原樣傳給 opencode（provider 不支援時會執行失敗）`);
+  }
+  saveApiConfig({ ...cfg, OPENCODE_MODEL: model, OPENCODE_VARIANT: variant });
+  return { model, variant };
+}
+
 // ── Engines ───────────────────────────────────────────────
 // Each engine returns { text, usage: { input_tokens, output_tokens, cost_usd } }
 
-async function runClaude(model, prompt, cwd) {
-  const { code, stdout, stderr } = await sh('claude', ['-p', '--model', model, '--output-format', 'json'], {
+/**
+ * @param {string} model claude 模型別名（sonnet / opus）
+ * @param {string} prompt
+ * @param {string} [cwd]
+ * @param {{ effort?: string }} [options] effort 未提供時不帶 --effort，交由 claude 預設
+ * @returns {Promise<{ text: string, usage: { input_tokens: number, output_tokens: number, cost_usd: number } }>}
+ */
+async function runClaude(model, prompt, cwd, { effort } = {}) {
+  const args = ['-p', '--model', model, '--output-format', 'json'];
+  if (effort) args.push('--effort', effort);
+  const { code, stdout, stderr } = await sh('claude', args, {
     input: prompt,
     cwd,
     captureStderr: true,
@@ -278,8 +354,18 @@ async function runClaude(model, prompt, cwd) {
   };
 }
 
-async function runOpencode(prompt, cwd) {
-  const { code, stdout, stderr } = await sh('opencode', ['run', '--format', 'json', prompt], { input: prompt, cwd, captureStderr: true });
+/**
+ * prompt 以 stdin 餵入（Windows 命令列長度上限約 32KB，diff 很容易超過）。
+ * @param {string} prompt
+ * @param {string} [cwd]
+ * @param {{ model?: string, variant?: string }} [options]
+ * @returns {Promise<{ text: string, usage: { input_tokens: number, output_tokens: number, cost_usd: number } }>}
+ */
+async function runOpencode(prompt, cwd, { model, variant } = {}) {
+  const args = ['run', '--format', 'json'];
+  if (model) args.push('--model', model);
+  if (variant) args.push('--variant', variant);
+  const { code, stdout, stderr } = await sh('opencode', args, { input: prompt, cwd, captureStderr: true });
   if (code !== 0) {
     throw new Error(`opencode 執行失敗（exit ${code}）${stderrNote(stderr)}`);
   }
@@ -334,12 +420,12 @@ async function runOpenAICompat({ API_BASE, API_KEY, API_MODEL }, prompt) {
   };
 }
 
-// engine: { kind: 'claude-sonnet'|'claude-opus'|'opencode'|'api', api?: {...} }
+// engine: { kind: 'claude-sonnet'|'claude-opus'|'opencode'|'api', api?: {...}, claude?: { effort }, opencode?: { model, variant } }
 async function runEngine(engine, prompt, cwd) {
   switch (engine.kind) {
-    case 'claude-sonnet': return runClaude('sonnet', prompt, cwd);
-    case 'claude-opus':   return runClaude('opus', prompt, cwd);
-    case 'opencode':      return runOpencode(prompt, cwd);
+    case 'claude-sonnet': return runClaude('sonnet', prompt, cwd, engine.claude);
+    case 'claude-opus':   return runClaude('opus', prompt, cwd, engine.claude);
+    case 'opencode':      return runOpencode(prompt, cwd, engine.opencode);
     case 'api':           return runOpenAICompat(engine.api, prompt);
     default: throw new Error(`Unknown engine: ${engine.kind}`);
   }
@@ -347,9 +433,16 @@ async function runEngine(engine, prompt, cwd) {
 
 function engineLabel(engine) {
   switch (engine.kind) {
-    case 'claude-sonnet': return 'Claude Sonnet';
-    case 'claude-opus':   return 'Claude Opus';
-    case 'opencode':      return 'opencode';
+    case 'claude-sonnet':
+    case 'claude-opus': {
+      const name = engine.kind === 'claude-opus' ? 'Claude Opus' : 'Claude Sonnet';
+      const { effort } = engine.claude || {};
+      return `${name}${effort ? ` /${effort}` : ''}`;
+    }
+    case 'opencode': {
+      const { model, variant } = engine.opencode || {};
+      return `opencode${model ? ` (${model})` : ''}${variant ? ` /${variant}` : ''}`;
+    }
     case 'api':           return `API (${engine.api.API_MODEL})`;
   }
 }
@@ -374,7 +467,45 @@ async function pickEngine(choices, defaultIdx = 1, label = '選擇 AI 引擎') {
     const api = await promptApiSettings();
     return { kind, api };
   }
+  if (kind === 'opencode') {
+    console.log('');
+    const opencode = await promptOpencodeSettings();
+    return { kind, opencode };
+  }
+  if (kind.startsWith('claude')) {
+    console.log('');
+    const claude = await promptClaudeSettings();
+    return { kind, claude };
+  }
   return { kind };
+}
+
+/**
+ * 深度驗證要讀原始碼、逐項推理，難度高於 review，因此沿用 review 引擎時升級到較強模型。
+ * 目前只有 Claude 有明確的強弱分級；其餘引擎的模型由使用者自行指定，維持原選擇。
+ * @param {object} engine
+ * @returns {{ engine: object, upgraded: boolean }}
+ */
+function upgradeForVerify(engine) {
+  // Claude：升到 Opus，並把 effort 補到 VERIFY_MIN_EFFORT。
+  if (engine.kind.startsWith('claude')) {
+    const current = engine.claude?.effort || DEFAULT_EFFORT;
+    const effort = raiseToFloor(current, EFFORT_LEVELS, VERIFY_MIN_EFFORT);
+    return {
+      engine: { ...engine, kind: 'claude-opus', claude: { ...engine.claude, effort } },
+      upgraded: engine.kind === 'claude-sonnet' || effort !== current,
+    };
+  }
+  // opencode：模型是任意字串、無從判斷強弱，只把 variant 補到 VERIFY_MIN_EFFORT。
+  if (engine.kind === 'opencode') {
+    const current = engine.opencode?.variant || DEFAULT_EFFORT;
+    const variant = raiseToFloor(current, OPENCODE_VARIANT_LEVELS, VERIFY_MIN_EFFORT);
+    return {
+      engine: { ...engine, opencode: { ...engine.opencode, variant } },
+      upgraded: variant !== current,
+    };
+  }
+  return { engine, upgraded: false };
 }
 
 // Honor PR_REVIEW_ENGINE env from review → verify chain.
