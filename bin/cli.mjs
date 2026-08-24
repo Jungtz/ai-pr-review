@@ -508,25 +508,6 @@ function upgradeForVerify(engine) {
   return { engine, upgraded: false };
 }
 
-// Honor PR_REVIEW_ENGINE env from review → verify chain.
-function inheritEngine() {
-  const env = process.env.PR_REVIEW_ENGINE;
-  if (!env) return null;
-  if (env === 'claude') return { kind: 'claude-opus' };
-  if (env === 'opencode') return { kind: 'opencode' };
-  if (env === 'api' && process.env.API_BASE && process.env.API_MODEL) {
-    return {
-      kind: 'api',
-      api: {
-        API_BASE: process.env.API_BASE,
-        API_KEY: process.env.API_KEY || '',
-        API_MODEL: process.env.API_MODEL,
-      },
-    };
-  }
-  return null;
-}
-
 // ── Output formatting helpers ─────────────────────────────
 
 function footerLine(engine, totalSec, usage) {
@@ -670,27 +651,13 @@ ${prDiff}
   console.log(`✅ 完整報告已儲存至 ${outFile}`);
   printSummaryFooter(engine, totalSec, usage);
 
-  // Detect 🔴 BUG count from 統計 section
-  const statsLine = text.split('\n').find(l => /統計/.test(l) && /🔴/.test(l));
-  let bugCount = 0;
-  if (statsLine) {
-    const m = statsLine.match(/🔴[^/]*?(\d+)/);
-    if (m) bugCount = parseInt(m[1], 10);
-  }
+  const bugCount = countBugs(text);
   if (bugCount > 0) {
     console.log('');
     console.log(`🔍 發現 ${bugCount} 個 🔴 BUG 級問題`);
     const verify = (await ask('是否進行深度驗證？ [Y/n]: ', 'Y')).toUpperCase();
     if (verify === 'Y') {
-      // Pass engine via env to verify subcommand
-      process.env.PR_REVIEW_ENGINE = engine.kind === 'api' ? 'api'
-        : engine.kind.startsWith('claude') ? 'claude' : 'opencode';
-      if (engine.kind === 'api') {
-        process.env.API_BASE = engine.api.API_BASE;
-        process.env.API_KEY = engine.api.API_KEY;
-        process.env.API_MODEL = engine.api.API_MODEL;
-      }
-      await cmdVerify(outFile);
+      await cmdVerify(outFile, null, engine);
       return;
     } else {
       console.log(`💡 稍後可執行: ./verify-bug.command ${outFile}`);
@@ -732,6 +699,24 @@ function extractBugBlocks(reportText) {
   return blocks;
 }
 
+/**
+ * 統計 🔴 BUG 級問題數量。
+ * 優先掃「彙整表」表格列（結構化，較不受排版影響），
+ * 其次回退到問題清單區塊數，最後才用「統計」行。
+ * @param {string} reportText
+ * @returns {number}
+ */
+function countBugs(reportText) {
+  const rows = reportText.split('\n').filter(line =>
+    /^\s*\|/.test(line) && /🔴/.test(line) && !/燈號/.test(line) && !/^\s*\|[\s|:-]*$/.test(line));
+  if (rows.length) return rows.length;
+  const blocks = extractBugBlocks(reportText).length;
+  if (blocks) return blocks;
+  const statsLine = reportText.split('\n').find(l => /統計/.test(l) && /🔴/.test(l));
+  const m = statsLine?.match(/🔴[^/]*?(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
 // 掃描所有「結論」行，統計各判定數量（支援單次批次驗證多個問題的輸出）。
 function countVerdicts(resultText) {
   const counts = { CONFIRMED: 0, FALSE_POSITIVE: 0, POTENTIAL: 0 };
@@ -744,7 +729,7 @@ function countVerdicts(resultText) {
   return counts;
 }
 
-async function cmdVerify(reportFileArg, projectDirArg) {
+async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
   const totalStart = Date.now();
   let reportFile = reportFileArg || process.argv[3];
   if (!reportFile) reportFile = await ask('📋 請輸入 review 報告檔案路徑：');
@@ -782,11 +767,15 @@ async function cmdVerify(reportFileArg, projectDirArg) {
   projectDir = resolve(projectDir);
   console.log(`   → 專案: ${projectDir}`);
 
-  // Engine: inherit from review if available
-  let engine = inheritEngine();
+  // Engine: review 直接傳入時沿用（並升級為更強模型），否則詢問
+  let engine = engineArg;
   if (engine) {
+    const upgrade = upgradeForVerify(engine);
     console.log('');
-    console.log(`🤖 沿用 review 引擎: ${engineLabel(engine)}`);
+    console.log(upgrade.upgraded
+      ? `🤖 沿用 review 引擎，並升級為 ${engineLabel(upgrade.engine)}（深度驗證需要更高強度）`
+      : `🤖 沿用 review 引擎: ${engineLabel(upgrade.engine)}`);
+    engine = upgrade.engine;
   } else {
     engine = await pickEngine(['claude-opus', 'opencode', 'api'], 1, '選擇驗證引擎');
   }
