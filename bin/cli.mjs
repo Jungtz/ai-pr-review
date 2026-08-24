@@ -16,10 +16,48 @@ const API_CONFIG = join(SCRIPT_DIR, '.api-config');
 
 // ── tiny utils ────────────────────────────────────────────
 
+const COMMAND_CACHE = new Map();
+
+/**
+ * Windows 上 spawn 無法直接執行 .cmd/.bat（Node 18.20+ 會丟 EINVAL），
+ * 因此優先在 PATH 解析出真正的執行檔；只有找不到 .exe 時才退回 shell 模式。
+ * @param {string} cmd
+ * @returns {{ file: string, shell: boolean }}
+ */
+function resolveCommand(cmd) {
+  if (process.platform !== 'win32') return { file: cmd, shell: false };
+  const cached = COMMAND_CACHE.get(cmd);
+  if (cached) return cached;
+  const dirs = (process.env.PATH || '')
+    .split(';')
+    .map(d => d.trim().replace(/^"|"$/g, ''))
+    .filter(Boolean);
+  let resolved = { file: cmd, shell: true };
+  outer:
+  for (const dir of dirs) {
+    for (const ext of ['.exe', '.com', '.bat', '.cmd']) {
+      const candidate = join(dir, cmd + ext);
+      if (existsSync(candidate)) {
+        resolved = { file: candidate, shell: /\.(bat|cmd)$/i.test(ext) };
+        break outer;
+      }
+    }
+  }
+  COMMAND_CACHE.set(cmd, resolved);
+  return resolved;
+}
+
+/** shell 模式下 Node 不會替我們跳脫參數，統一加引號避免 cmd.exe 誤判。 */
+function quoteArg(arg) {
+  return `"${String(arg).replace(/"/g, '""')}"`;
+}
+
 function sh(cmd, args, { input, cwd, captureStderr = false } = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(cmd, args, {
+    const { file, shell } = resolveCommand(cmd);
+    const child = spawn(shell ? quoteArg(file) : file, shell ? args.map(quoteArg) : args, {
       cwd,
+      shell,
       stdio: [input != null ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
     });
     let out = '';
