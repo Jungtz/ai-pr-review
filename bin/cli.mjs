@@ -655,7 +655,7 @@ ${prDiff}
   if (bugCount > 0) {
     console.log('');
     console.log(`🔍 發現 ${bugCount} 個 🔴 BUG 級問題`);
-    const verify = (await ask('是否進行深度驗證？ [Y/n]: ', 'Y')).toUpperCase();
+    const verify = (await ask('是否進行深度驗證？ [y/N]: ', 'N')).toUpperCase();
     if (verify === 'Y') {
       await cmdVerify(outFile, null, engine);
       return;
@@ -665,6 +665,11 @@ ${prDiff}
   } else {
     console.log('');
     console.log('✅ 沒有 🔴 BUG 級問題');
+    const verify = (await ask('是否仍要進行深度驗證？ [y/N]: ', 'N')).toUpperCase();
+    if (verify === 'Y') {
+      await cmdVerify(outFile, null, engine);
+      return;
+    }
   }
 }
 
@@ -676,20 +681,25 @@ function formatTimestamp() {
 
 // ── Command: verify ───────────────────────────────────────
 
-function extractBugBlocks(reportText) {
+function extractBlocks(reportText, emoji) {
   const lines = reportText.split('\n');
   const blocks = [];
   let buf = [];
   const flush = () => { if (buf.length) blocks.push(buf.join('\n')); buf = []; };
+  const allEmojis = ['🔴', '🟡', '🟢'];
+  const otherEmojis = allEmojis.filter(e => e !== emoji);
   for (const line of lines) {
+    if (/^#+\s*(彙整表|判定結果)/.test(line) || /^\*\*(?:彙整表|判定結果)/.test(line)) {
+      flush();
+      break;
+    }
     const isHeading = /^[#*]/.test(line);
-    if (/🔴/.test(line) && isHeading) {
+    if (isHeading && line.includes(emoji)) {
       flush();
       buf = [line];
       continue;
     }
-    if (((/🟡/.test(line) || /🟢/.test(line)) && isHeading) ||
-        /^#+\s*彙整表/.test(line) || /^#+\s*判定結果/.test(line)) {
+    if (isHeading && otherEmojis.some(e => line.includes(e))) {
       flush();
       continue;
     }
@@ -697,6 +707,18 @@ function extractBugBlocks(reportText) {
   }
   flush();
   return blocks;
+}
+
+function extractBugBlocks(reportText) {
+  return extractBlocks(reportText, '🔴');
+}
+
+function extractWarnBlocks(reportText) {
+  return extractBlocks(reportText, '🟡');
+}
+
+function titleOf(block) {
+  return block.split('\n')[0].replace(/^#+\s*/, '').replace(/\[?[🔴🟡🟢]\]?\s*/g, '').replace(/\*/g, '').trim();
 }
 
 /**
@@ -738,6 +760,30 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
     return;
   }
   const reportText = readFileSync(reportFile, 'utf8');
+
+  // ── 0 BUG 時的 WARN fallback：在 clone 前先判斷，避免無謂的 clone ──
+  let blocks = extractBugBlocks(reportText);
+  let isWarnFallback = false;
+  if (!blocks.length) {
+    const warnBlocks = extractWarnBlocks(reportText);
+    if (!warnBlocks.length) {
+      console.log('   ✅ 沒有找到 🔴 BUG 級問題（也沒有 🟡 WARN）');
+      return;
+    }
+    // 從 review 連續呼叫時（engineArg 已帶入）視為已取得用戶同意，直接 fallback；獨立執行 verify 時才二次確認
+    if (engineArg) {
+      console.log(`   ℹ️  沒有 🔴 BUG，自動 fallback 至 ${warnBlocks.length} 個 🟡 WARN 進行驗證`);
+    } else {
+      console.log(`   ℹ️  沒有 🔴 BUG，但發現 ${warnBlocks.length} 個 🟡 WARN`);
+      const doWarn = (await ask('是否改為深度驗證 🟡 WARN？ [y/N]: ', 'N')).toUpperCase();
+      if (doWarn !== 'Y') {
+        console.log('   → 已跳過驗證');
+        return;
+      }
+    }
+    blocks = warnBlocks;
+    isWarnFallback = true;
+  }
 
   // Resolve project dir: arg > metadata auto-clone > prompt
   let projectDir = projectDirArg || process.argv[4];
@@ -785,18 +831,11 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
   console.log('');
 
   const stepStart = Date.now();
-  console.log('🔧 [1/2] 提取 🔴 BUG 級問題...');
-  const blocks = extractBugBlocks(reportText);
-  if (!blocks.length) {
-    console.log('   ✅ 沒有找到 🔴 BUG 級問題');
-    if (cloneCleanup) rmSync(projectDir, { recursive: true, force: true });
-    return;
-  }
-  console.log(`   ✓ 找到 ${blocks.length} 個問題 (${Math.floor((Date.now() - stepStart) / 1000)}s)`);
+  console.log(`🔧 [1/2] 提取 ${isWarnFallback ? '🟡 WARN' : '🔴 BUG'} 級問題...`);
+  console.log(`   ✓ 找到 ${blocks.length} 個${isWarnFallback ? ' WARN' : ''} 問題 (${Math.floor((Date.now() - stepStart) / 1000)}s)`);
   console.log('');
   blocks.forEach((b, i) => {
-    const title = b.split('\n')[0].replace(/^#+\s*/, '').replace(/🔴\s*/, '').replace(/\*/g, '');
-    console.log(`  [${i + 1}] ${title}`);
+    console.log(`  [${i + 1}] ${titleOf(b)}`);
   });
   console.log('');
   console.log('  [a] 全部驗證');
@@ -811,11 +850,12 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
 
   const verifyFile = reportFile.replace(/\.md$/, '_verify.md');
   mkdirSync(dirname(verifyFile), { recursive: true });
-  let out = `## 🔍 BUG 驗證報告\n\n來源報告: \`${basename(reportFile)}\`\n\n`;
+  let out = isWarnFallback
+    ? `## 🔍 WARN 驗證報告（由 BUG fallback）\n\n來源報告: \`${basename(reportFile)}\`\n\n`
+    : `## 🔍 BUG 驗證報告\n\n來源報告: \`${basename(reportFile)}\`\n\n`;
 
   const promptTemplate = readFileSync(join(PROMPTS_DIR, 'verify-bug.md'), 'utf8');
 
-  const titleOf = b => b.split('\n')[0].replace(/^#+\s*/, '').replace(/🔴\s*/, '').replace(/\*/g, '');
   const selected = blocks
     .map((block, i) => ({ block, i }))
     .filter(({ i }) => selection === 'a' || selection === String(i + 1));
@@ -830,7 +870,10 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
   const issuesBlock = selected
     .map(({ block }, n) => `### 問題 ${n + 1}：${titleOf(block)}\n\n${block}`)
     .join('\n\n---\n\n');
-  const prompt = `${promptTemplate}\n\n## The issues to verify（共 ${selected.length} 個，逐一驗證）\n\n${issuesBlock}\n`;
+  const promptHeader = isWarnFallback
+    ? `${promptTemplate}\n\n> 註：原報告無 🔴 BUG，本次為 🟡 WARN fallback 驗證。請以同等嚴謹度判斷每個 WARN 是否實為 BUG / 誤報 / 潛在風險。\n\n## The WARN issues to verify（共 ${selected.length} 個，逐一驗證）\n\n`
+    : `${promptTemplate}\n\n## The issues to verify（共 ${selected.length} 個，逐一驗證）\n\n`;
+  const prompt = `${promptHeader}${issuesBlock}\n`;
 
   selected.forEach(({ block }, n) => console.log(`   [${n + 1}/${selected.length}] ${titleOf(block)}`));
   console.log('');
