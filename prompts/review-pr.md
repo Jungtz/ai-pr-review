@@ -54,6 +54,8 @@ Review the GitHub PR based on the data provided below.
 - **對未變更程式碼的建議**：只 review diff 中的變更
 - **已有 test 覆蓋的邊界情境**：diff 中可見對應 test 則不需重複提醒
 - **主觀偏好**：命名風格、程式碼組織方式等無明確對錯之分的選擇
+- **一般性品質顧慮**：測試覆蓋不足、泛用安全建議 — 除非 PR 或專案規範明文要求；Detection Checklist 列舉的具體問題不在排除範圍
+- **已壓制的議題**：程式碼已用 lint-ignore / eslint-disable 等標記刻意壓制的位置
 - **效能建議**：「應該用 `useMemo`」「應該加 index」等最佳化建議，除非 diff 引入了明顯的 O(n²) 或無限迴圈
 
 ## Output Format
