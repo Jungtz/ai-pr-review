@@ -46,6 +46,16 @@
 
 - **Magic number / string**: 程式碼中直接使用未命名的常數值，語意不明
 
+- **Misleading / stale comment**: 註解描述的行為與程式碼實際行為矛盾（參數或邏輯已改但註解沒同步、註解宣稱的保證程式碼做不到），誤導後續維護者
+
+  <example>
+  ❌ 有問題：
+  ```
+  // 回傳快取結果，不會發出網路請求
+  const data = await fetchUser(id)   // 實際每次都打 API
+  ```
+  </example>
+
 - **Naming inconsistency**: 同一概念在不同檔案使用不同名稱
 
 - Deprecated 程式碼用註解包起來而非刪除（git history 可還原）
