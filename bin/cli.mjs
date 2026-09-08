@@ -655,7 +655,7 @@ ${prDiff}
   if (bugCount > 0) {
     console.log('');
     console.log(`🔍 發現 ${bugCount} 個 🔴 BUG 級問題`);
-    const verify = (await ask('是否進行深度驗證？ [y/N]: ', 'N')).toUpperCase();
+    const verify = (await ask('是否進行深度驗證？ [Y/n]: ', 'Y')).toUpperCase();
     if (verify === 'Y') {
       await cmdVerify(outFile, null, engine);
       return;
