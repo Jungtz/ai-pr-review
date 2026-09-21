@@ -1051,8 +1051,87 @@ async function cmdChat(reportFile, reportText, prDiff, engine) {
   if (cloneCleanup && projectDir) rmSync(projectDir, { recursive: true, force: true });
 }
 
+// ── Command: share ──────────────────────────────────────────
+// 將報告上傳為 GitHub Gist 並取得分享連結；預設 secret，public 需二次確認。
+
 /**
- * 分析結束後的三選一選單：驗證 / 聊天 / 結束。
+ * 上傳單一報告檔為 gist，成功後把 gist ID／URL 註記回檔尾。
+ * @param {string} file 報告檔路徑
+ * @param {boolean} isPublic 是否公開（預設 secret）
+ * @returns {Promise<string | null>} 分享 URL，失敗回傳 null
+ */
+async function shareViaGist(file, isPublic) {
+  const desc = `ai-pr-review ${basename(file)}`;
+  const args = ['gist', 'create', '--desc', desc];
+  if (isPublic) args.push('--public');
+  args.push(file);
+  const { code, stdout, stderr } = await sh('gh', args, { captureStderr: true });
+  if (code !== 0) {
+    console.log(`❌ 上傳失敗（exit ${code}）${stderrNote(stderr)}`);
+    return null;
+  }
+  const m = stdout.match(/https:\/\/gist\.github\.com\/\S+/);
+  if (!m) {
+    console.log(`❌ 無法從輸出解析 gist 連結：${excerpt(stdout) || '(空輸出)'}`);
+    return null;
+  }
+  const url = m[0].replace(/\/$/, '');
+  const id = url.split('/').pop();
+  try {
+    const prev = readFileSync(file, 'utf8')
+      .replace(/\n<!--\s*share-meta:.*?-->/g, '')
+      .replace(/\s+$/, '');
+    writeFileSync(file, `${prev}\n<!-- share-meta: gist=${id} url=${url} -->\n`);
+  } catch { /* 註記失敗不影響分享本身 */ }
+  return url;
+}
+
+/**
+ * 分享節點：列出本次 PR 已產生的報告，選一份上傳為 gist。
+ * @param {string} reportFile review 報告路徑（verify／chat 檔名由此衍生）
+ */
+async function cmdShare(reportFile) {
+  const candidates = [
+    { file: reportFile, label: 'review 報告' },
+    { file: reportFile.replace(/\.md$/, '_verify.md'), label: '驗證報告' },
+    { file: reportFile.replace(/\.md$/, '_chat.md'), label: '聊天紀錄' },
+  ].filter(c => existsSync(c.file));
+  if (!candidates.length) {
+    console.log('   ❌ 找不到可分享的報告');
+    return;
+  }
+  let target = candidates[0].file;
+  if (candidates.length > 1) {
+    console.log('');
+    candidates.forEach((c, i) => console.log(`  [${i + 1}] ${c.label}（${basename(c.file)}）`));
+    console.log('');
+    const pick = await ask(`分享哪一份？ [1-${candidates.length}]（直接 Enter 為 1）: `, '1');
+    const idx = parseInt(pick, 10) - 1;
+    if (!candidates[idx]) {
+      console.log(`   ❌ 無效的選擇: ${pick}`);
+      return;
+    }
+    target = candidates[idx].file;
+  }
+  console.log(`   ⚠️  報告含 PR diff，上傳後拿到連結的人即可檢視`);
+  const isPublic = (await ask('公開程度 [1] secret（預設） [2] public: ', '1')) === '2';
+  if (isPublic) {
+    const ok = (await ask('⚠️ 公開後任何人可見，確認公開？ [y/N]: ', 'N')).toUpperCase();
+    if (!['Y', 'YES'].includes(ok)) {
+      console.log('   → 已取消分享');
+      return;
+    }
+  }
+  console.log('   正在上傳...');
+  const url = await shareViaGist(target, isPublic);
+  if (url) {
+    console.log('');
+    console.log(`🔗 分享連結：${url}`);
+  }
+}
+
+/**
+ * 分析結束後的選單：驗證 / 聊天 / 結束 / 分享連結（可循環）。
  * @param {{ reportFile: string, reportText: string, prDiff: string, engine: object }} ctx
  */
 async function postReviewMenu({ reportFile, reportText, prDiff, engine }) {
@@ -1072,8 +1151,9 @@ async function postReviewMenu({ reportFile, reportText, prDiff, engine }) {
     console.log('  [1] 深度驗證');
     console.log('  [2] 跟 AI 聊天（基於這份報告 + 原始 diff）');
     console.log('  [3] 結束');
+    console.log('  [4] 產生分享連結（GitHub Gist）');
     console.log('');
-    const choice = await ask(`選擇 [1-3]（直接 Enter 為 ${defaultChoice}）: `, defaultChoice);
+    const choice = await ask(`選擇 [1-4]（直接 Enter 為 ${defaultChoice}）: `, defaultChoice);
     if (choice === '1') {
       await cmdVerify(reportFile, null, engine);
       defaultChoice = '3';
@@ -1083,6 +1163,9 @@ async function postReviewMenu({ reportFile, reportText, prDiff, engine }) {
     } else if (choice === '3') {
       console.log(`💡 稍後可執行: ./verify-bug.command ${reportFile}`);
       return;
+    } else if (choice === '4') {
+      await cmdShare(reportFile);
+      defaultChoice = '3';
     } else {
       console.log(`   ❌ 無效的選擇: ${choice}`);
     }
