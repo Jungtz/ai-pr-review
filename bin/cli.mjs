@@ -354,6 +354,25 @@ async function runClaude(model, prompt, cwd, { effort } = {}) {
   };
 }
 
+let OPENCODE_MAJOR_CACHE = 0;
+
+/**
+ * 偵測 opencode 主版本：v1 吃 `--variant`，v2 改吃 `--model provider/model#variant`。
+ * 失敗時預設 2（現行版本），避免舊語法在 v2 直接報錯。
+ * @returns {Promise<number>}
+ */
+async function opencodeMajor() {
+  if (OPENCODE_MAJOR_CACHE) return OPENCODE_MAJOR_CACHE;
+  try {
+    const { code, stdout } = await sh('opencode', ['--version'], { captureStderr: true });
+    const m = String(stdout || '').match(/v?(\d+)\./);
+    OPENCODE_MAJOR_CACHE = code === 0 && m ? parseInt(m[1], 10) : 2;
+  } catch {
+    OPENCODE_MAJOR_CACHE = 2;
+  }
+  return OPENCODE_MAJOR_CACHE;
+}
+
 /**
  * prompt 以 stdin 餵入（Windows 命令列長度上限約 32KB，diff 很容易超過）。
  * @param {string} prompt
@@ -363,8 +382,16 @@ async function runClaude(model, prompt, cwd, { effort } = {}) {
  */
 async function runOpencode(prompt, cwd, { model, variant } = {}) {
   const args = ['run', '--format', 'json'];
-  if (model) args.push('--model', model);
-  if (variant) args.push('--variant', variant);
+  const cleanModel = String(model || '').trim();
+  const cleanVariant = String(variant || '').trim();
+  if (await opencodeMajor() >= 2) {
+    // v2 已移除 `--variant`，改為 `--model provider/model#variant`；model 已含 `#` 則原樣沿用。
+    // 無 model 單有 variant 時 v2 無處可掛，沿用 opencode 預設模型（variant 由其 config 決定）。
+    if (cleanModel) args.push('--model', cleanModel.includes('#') ? cleanModel : (cleanVariant ? `${cleanModel}#${cleanVariant}` : cleanModel));
+  } else {
+    if (cleanModel) args.push('--model', cleanModel);
+    if (cleanVariant) args.push('--variant', cleanVariant);
+  }
   const { code, stdout, stderr } = await sh('opencode', args, { input: prompt, cwd, captureStderr: true });
   if (code !== 0) {
     throw new Error(`opencode 執行失敗（exit ${code}）${stderrNote(stderr)}`);
