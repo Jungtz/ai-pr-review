@@ -60,14 +60,21 @@ function sh(cmd, args, { input, cwd, captureStderr = false } = {}) {
       shell,
       stdio: [input != null ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
     });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', d => (out += d));
-    if (captureStderr) child.stderr.on('data', d => (err += d));
+    // 注意：不可用 `out += chunk` 逐塊拼接字串——UTF-8 中文為多位元組，
+    //  chunk 邊界切開字元時會逐塊產生替代字元 `�`，導致 diff／AI 輸出出現假性亂碼。
+    //  必須先收 Buffer，結束後一次 decode。
+    const outChunks = [];
+    const errChunks = [];
+    child.stdout.on('data', d => outChunks.push(d));
+    if (captureStderr) child.stderr.on('data', d => errChunks.push(d));
     child.on('error', reject);
-    child.on('close', code => resolvePromise({ code, stdout: out, stderr: err }));
+    child.on('close', code => resolvePromise({
+      code,
+      stdout: Buffer.concat(outChunks).toString('utf8'),
+      stderr: Buffer.concat(errChunks).toString('utf8'),
+    }));
     if (input != null) {
-      child.stdin.end(input);
+      child.stdin.end(input, 'utf8');
     }
   });
 }
