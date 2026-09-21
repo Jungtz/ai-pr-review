@@ -523,12 +523,47 @@ function printSummaryFooter(engine, totalSec, usage) {
 
 // ── Command: review ───────────────────────────────────────
 
+/**
+ * 判斷是否為本工具產生的報告（一律驗內容標記，檔名改過也認得）。
+ * @param {string} file
+ * @returns {boolean}
+ */
+function looksLikeReviewReport(file) {
+  if (!/\.md$/i.test(file) || !existsSync(file)) return false;
+  try {
+    const text = readFileSync(file, 'utf8');
+    return text.includes('彙整表') || text.includes('verify-meta') || text.includes('🔴') || text.includes('🟡');
+  } catch {
+    return false;
+  }
+}
+
 async function cmdReview() {
   const totalStart = Date.now();
-  console.log('📋 請貼上 PR 連結：');
-  const prUrl = await ask('');
+  console.log('📋 請貼上 PR 連結（或既有 .md 報告路徑以分享）：');
+  const rawInput = await ask('');
+  if (!rawInput) {
+    console.log('❌ 未輸入 PR 連結');
+    return;
+  }
+  // Windows 複製路徑／拖曳進終端機自帶外層引號，先清掉（PR 連結同樣受惠）
+  const prUrl = rawInput.replace(/^["']|["']$/g, '').trim();
   if (!prUrl) {
     console.log('❌ 未輸入 PR 連結');
+    return;
+  }
+
+  // 既有報告路徑：分流至分享節點，不跑 review
+  if (/\.md$/i.test(prUrl)) {
+    if (!looksLikeReviewReport(prUrl)) {
+      console.log(`❌ 不是 PR review 報告：${prUrl}`);
+      return;
+    }
+    // 衍生報告（_verify／_chat）還原為主報告，以便列出同 PR 全部報告；主檔不在才用原路徑
+    const baseReport = prUrl.replace(/_(verify|chat)\.md$/i, '.md');
+    const targetReport = existsSync(baseReport) ? baseReport : prUrl;
+    console.log(`   → 既有報告：${targetReport}`);
+    await cmdShare(targetReport);
     return;
   }
 

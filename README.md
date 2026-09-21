@@ -63,7 +63,7 @@ review-pr.bat
 ### Step 1：PR Review
 
 ```
-📋 貼上 PR 連結
+📋 貼上 PR 連結（貼既有 .md 報告路徑則改走分享流程）
         ↓
 🤖 選擇 AI 引擎
    [1] Claude Sonnet（預設）

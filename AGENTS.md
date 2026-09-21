@@ -23,6 +23,7 @@
 
 ## 流程邏輯（改選單前先讀）
 
+- `cmdReview` 入口若收到 `.md` 路徑，先經 `looksLikeReviewReport` 判定，屬實則分流至 `cmdShare`（舊報告分享，不跑 review）
 - `cmdReview` 結束進 `postReviewMenu`（驗證／聊天／結束／分享連結，可循環；動作完成後預設切回結束防誤觸）
 - `cmdVerify`：單次批次驗證，一律全驗；`cmdChat`：進場即 clone codebase，失敗才降級為報告＋diff
 - `cmdShare`：挑一份報告上傳為 gist（預設 secret，public 二次確認）；連結註記回檔尾 `<!-- share-meta: … -->`，勿與 `verify-meta` 解析搞混
