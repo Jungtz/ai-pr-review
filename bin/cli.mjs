@@ -751,6 +751,47 @@ function countVerdicts(resultText) {
   return counts;
 }
 
+/**
+ * 解析專案目錄：arg > metadata auto-clone > 手動輸入。
+ * 使用者直接 Enter 放棄時回傳 null（呼叫端自行決定中斷或以降級模式繼續）。
+ * @param {string} reportText
+ * @param {string} [projectDirArg]
+ * @returns {Promise<{ projectDir: string, cloneCleanup: boolean } | null>}
+ */
+async function resolveProjectDir(reportText, projectDirArg) {
+  let projectDir = projectDirArg;
+  let cloneCleanup = false;
+  if (!projectDir) {
+    const metaMatch = reportText.match(/<!--\s*verify-meta:\s*repo=(\S+)\s+branch=(\S+?)\s*-->/);
+    if (metaMatch) {
+      const [, repo, branch] = metaMatch;
+      console.log(`📂 從報告取得 repo: ${repo} (${branch})`);
+      console.log('   正在 clone...');
+      projectDir = mkdtempSync(join(tmpdir(), 'verify-clone-'));
+      const { code } = await sh('gh', ['repo', 'clone', repo, projectDir, '--', '--depth', '1', '--branch', branch, '--single-branch']);
+      if (code !== 0) {
+        console.log('❌ Clone 失敗');
+        rmSync(projectDir, { recursive: true, force: true });
+        return null;
+      }
+      cloneCleanup = true;
+      console.log('   ✓ Clone 完成');
+    }
+  }
+  if (!projectDir) {
+    const input = await ask('\n📂 請輸入專案路徑（直接 Enter 取消）：');
+    if (!input) return null;
+    projectDir = input;
+  }
+  if (!existsSync(projectDir) || !statSync(projectDir).isDirectory()) {
+    console.log(`❌ 無效的專案路徑: ${projectDir}`);
+    return null;
+  }
+  projectDir = resolve(projectDir);
+  console.log(`   → 專案: ${projectDir}`);
+  return { projectDir, cloneCleanup };
+}
+
 async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
   const totalStart = Date.now();
   let reportFile = reportFileArg || process.argv[3];
@@ -785,33 +826,13 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
     isWarnFallback = true;
   }
 
-  // Resolve project dir: arg > metadata auto-clone > prompt
-  let projectDir = projectDirArg || process.argv[4];
-  let cloneCleanup = false;
-  if (!projectDir) {
-    const metaMatch = reportText.match(/<!--\s*verify-meta:\s*repo=(\S+)\s+branch=(\S+?)\s*-->/);
-    if (metaMatch) {
-      const [, repo, branch] = metaMatch;
-      console.log(`📂 從報告取得 repo: ${repo} (${branch})`);
-      console.log('   正在 clone...');
-      projectDir = mkdtempSync(join(tmpdir(), 'verify-clone-'));
-      const { code } = await sh('gh', ['repo', 'clone', repo, projectDir, '--', '--depth', '1', '--branch', branch, '--single-branch']);
-      if (code !== 0) {
-        console.log('❌ Clone 失敗');
-        rmSync(projectDir, { recursive: true, force: true });
-        return;
-      }
-      cloneCleanup = true;
-      console.log('   ✓ Clone 完成');
-    }
-  }
-  if (!projectDir) projectDir = await ask('\n📂 請輸入專案路徑（驗證需要讀取原始碼）：');
-  if (!projectDir || !existsSync(projectDir) || !statSync(projectDir).isDirectory()) {
-    console.log(`❌ 無效的專案路徑: ${projectDir}`);
+  // Resolve project dir: arg > metadata auto-clone > prompt（verify 必須有原始碼，中斷不降級）
+  const resolved = await resolveProjectDir(reportText, projectDirArg || process.argv[4]);
+  if (!resolved) {
+    console.log('   → 已跳過驗證');
     return;
   }
-  projectDir = resolve(projectDir);
-  console.log(`   → 專案: ${projectDir}`);
+  const { projectDir, cloneCleanup } = resolved;
 
   // Engine: review 直接傳入時沿用（並升級為更強模型），否則詢問
   let engine = engineArg;
@@ -838,9 +859,7 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
     console.log(`  [${i + 1}] ${titleOf(b)}`);
   });
   console.log('');
-  console.log('  [a] 全部驗證');
-  console.log('');
-  const selection = (await ask('選擇要驗證的問題（數字/a，直接 Enter 為全部）: ', 'a')).toLowerCase();
+  console.log(`   → 共 ${blocks.length} 個問題，一律全部驗證`);
 
   console.log('');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -856,15 +875,7 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
 
   const promptTemplate = readFileSync(join(PROMPTS_DIR, 'verify-bug.md'), 'utf8');
 
-  const selected = blocks
-    .map((block, i) => ({ block, i }))
-    .filter(({ i }) => selection === 'a' || selection === String(i + 1));
-
-  if (!selected.length) {
-    console.log(`   ❌ 無效的選擇: ${selection}`);
-    if (cloneCleanup) rmSync(projectDir, { recursive: true, force: true });
-    return;
-  }
+  const selected = blocks.map((block, i) => ({ block, i }));
 
   // 單次批次驗證：所有選定問題合併成一個 prompt，共用 codebase 讀取以節省 token。
   const issuesBlock = selected
