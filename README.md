@@ -34,7 +34,8 @@ ai-pr-review/
 │   └── patterns.md      # 通用 detection patterns（跨語言）
 └── results/             # 輸出報告（.gitignore）
     ├── PR_*_.md         # Review 報告
-    └── PR_*_verify.md   # 驗證報告
+    ├── PR_*_verify.md   # 驗證報告
+    └── PR_*_chat.md     # 聊天紀錄
 ```
 
 > 前置依賴：`node` (>= 18)、`gh` CLI；視所選引擎還需 `claude` 或 `opencode` 或 `curl`。
@@ -69,12 +70,7 @@ review-pr.bat
    [2] Claude Opus（深度分析）
    [3] opencode
    [4] OpenAI 相容 API（Ollama / OpenRouter / 其他）
-   [5] 自訂指令
-        ↓
-📄 選擇輸出方式
-   [1] 儲存為檔案
-   [2] 預覽（less / more）
-        ↓
+         ↓
 📡 自動取得 PR 資訊 + diff（via gh CLI）
         ↓
 🔧 載入通用 detection patterns
@@ -83,7 +79,9 @@ review-pr.bat
         ↓
 📊 顯示彙整表 + 儲存報告
         ↓
-🔍 若有 🔴 BUG 級問題 → 詢問是否進入深度驗證（預設為 Y）
+🔀 三選一（可循環操作）：
+   [1] 深度驗證 / [2] 跟 AI 聊天 / [3] 結束
+   有 🔴 BUG 預設為 [1]，動作完成後預設切回 [3]
 ```
 
 ### Step 2：BUG 驗證（verify-bug）
@@ -102,9 +100,7 @@ review-pr.bat
    [2] opencode
    [3] OpenAI 相容 API（Ollama / OpenRouter / 其他）
         ↓
-🔧 提取報告中所有 🔴 問題
-        ↓
-   選擇要驗證的問題（單一 / 全部）
+🔧 提取報告中所有 🔴 問題（一律全部驗證）
         ↓
 🤖 AI 逐一讀取原始碼進行驗證
    - CONFIRMED：確認是 BUG
@@ -112,6 +108,21 @@ review-pr.bat
    - POTENTIAL：潛在風險
         ↓
 📊 輸出驗證摘要 + 儲存報告
+```
+
+### Step 3：AI 聊天（chat）
+
+針對已完成的 review，與 AI 多輪問答（基於 review 報告 + 原始 diff）：
+
+```
+💬 進場即備好專案原始碼（與驗證同一套解析：報告 metadata 自動 clone）
+        ↓
+💬 多輪問答（沿用分析引擎，不重選；歷史上限 20 輪）
+   追問 diff 細節直接答，超出 diff 範圍則讀原始碼查證
+        ↓
+   輸入 exit / quit / q 結束
+        ↓
+📝 聊天紀錄追加儲存 + 刪除暫存 clone 目錄
 ```
 
 ## 輸出範例
@@ -127,6 +138,11 @@ Review 報告儲存為 `PR_{number}_{timestamp}.md`，包含：
 
 - 每個 🔴 問題的驗證結論與分析過程
 - 驗證摘要統計
+
+聊天紀錄儲存為 `PR_{number}_{timestamp}_chat.md`（多次聊天則追加），包含：
+
+- 逐輪問答
+- 使用引擎與 tokens / 費用統計
 
 ## Detection Patterns
 
