@@ -651,26 +651,7 @@ ${prDiff}
   console.log(`✅ 完整報告已儲存至 ${outFile}`);
   printSummaryFooter(engine, totalSec, usage);
 
-  const bugCount = countBugs(text);
-  if (bugCount > 0) {
-    console.log('');
-    console.log(`🔍 發現 ${bugCount} 個 🔴 BUG 級問題`);
-    const verify = (await ask('是否進行深度驗證？ [Y/n]: ', 'Y')).toUpperCase();
-    if (verify === 'Y') {
-      await cmdVerify(outFile, null, engine);
-      return;
-    } else {
-      console.log(`💡 稍後可執行: ./verify-bug.command ${outFile}`);
-    }
-  } else {
-    console.log('');
-    console.log('✅ 沒有 🔴 BUG 級問題');
-    const verify = (await ask('是否仍要進行深度驗證？ [y/N]: ', 'N')).toUpperCase();
-    if (verify === 'Y') {
-      await cmdVerify(outFile, null, engine);
-      return;
-    }
-  }
+  await postReviewMenu({ reportFile: outFile, reportText: text, prDiff, engine });
 }
 
 function formatTimestamp() {
@@ -936,6 +917,176 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`✅ 驗證報告已儲存至 ${verifyFile}`);
   printSummaryFooter(engine, totalSec, totalUsage);
+}
+
+// ── Command: chat ─────────────────────────────────────────
+// 基於 review 報告 + 原始 diff 的多輪問答；進場即備好 codebase（同 verify），失敗才降級。
+
+const CHAT_MAX_HISTORY = 20;
+const CHAT_EXIT_KEYS = new Set(['exit', 'quit', 'q', ':q']);
+
+/**
+ * @param {string} reportFile review 報告路徑（聊天紀錄以此衍生檔名）
+ * @param {string} reportText review 報告全文
+ * @param {string} prDiff 截斷後的 PR diff（與 review 同一份）
+ * @param {object} engine 沿用分析引擎，不重選
+ */
+async function cmdChat(reportFile, reportText, prDiff, engine) {
+  const totalStart = Date.now();
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('💬 AI 聊天（基於這份分析 + 原始 diff）');
+  console.log(`   → 使用: ${engineLabel(engine)}`);
+  console.log('   輸入 exit / quit / q 結束聊天');
+  console.log('');
+
+  // 聊天一律先備好 codebase（clone 本身不耗 token，AI 讀檔時才耗）；失敗則降級為純報告 + diff
+  let projectDir;
+  let cloneCleanup = false;
+  {
+    // 以磁碟檔案為準（內含 verify-meta 可自動 clone），記憶體文字僅為 fallback
+    let metaSource = reportText;
+    try {
+      if (existsSync(reportFile)) metaSource = readFileSync(reportFile, 'utf8');
+    } catch { /* 沿用記憶體文字 */ }
+    const resolved = await resolveProjectDir(metaSource);
+    if (resolved) {
+      projectDir = resolved.projectDir;
+      cloneCleanup = resolved.cloneCleanup;
+    } else {
+      console.log('   → 無法取得原始碼，僅用報告 + diff 回答');
+    }
+  }
+
+  const cwd = projectDir || undefined;
+  const codeNote = projectDir
+    ? `已關聯專案原始碼（${projectDir}），追問 diff 以外的程式時可讀檔查證。`
+    : '未關聯專案原始碼，只能依據下方報告與 diff 回答；若問題超出 diff 範圍，請如實說明需要關聯原始碼或進入深度驗證。';
+  console.log('');
+  console.log('💬 開始聊天（空行不發送）：');
+  console.log('');
+
+  /** @type {{ q: string, a: string }[]} */
+  const history = [];
+  const totalUsage = { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+
+  for (;;) {
+    const q = await ask('你> ');
+    if (!q) continue;
+    if (CHAT_EXIT_KEYS.has(q.trim().toLowerCase())) break;
+
+    const historyBlock = history.length
+      ? history.map(h => `User: ${h.q}\nAssistant: ${h.a}`).join('\n\n')
+      : '（無）';
+    const prompt = [
+      '你是 PR review 助手，正在與使用者針對一份已完成的 review 進行多輪問答。',
+      codeNote,
+      '請用繁體中文回答，程式碼片段、檔案路徑、技術術語維持英文。',
+      '',
+      '## Review 報告',
+      '',
+      reportText,
+      '',
+      '## PR Diff',
+      '',
+      '```diff',
+      prDiff,
+      '```',
+      '',
+      '## 對話歷史',
+      '',
+      historyBlock,
+      '',
+      '## 本次問題',
+      '',
+      q,
+    ].join('\n');
+
+    let answer;
+    try {
+      const res = await withSpinner('思考中', runEngine(engine, prompt, cwd));
+      answer = res.text;
+      totalUsage.input_tokens += res.usage.input_tokens;
+      totalUsage.output_tokens += res.usage.output_tokens;
+      totalUsage.cost_usd += res.usage.cost_usd;
+    } catch (e) {
+      console.log(`❌ ${e.message || e}`);
+      continue;
+    }
+
+    console.log('');
+    console.log(answer.trim());
+    console.log('');
+    history.push({ q, a: answer.trim() });
+    if (history.length > CHAT_MAX_HISTORY) {
+      history.shift();
+      console.log(`   ℹ️  對話歷史超過 ${CHAT_MAX_HISTORY} 輪，已丟棄最舊一輪（可結束聊天存檔後重開）`);
+    }
+  }
+
+  const totalSec = Math.floor((Date.now() - totalStart) / 1000);
+  const chatFile = reportFile.replace(/\.md$/, '_chat.md');
+  const lines = [
+    `## 💬 聊天紀錄`,
+    '',
+    `來源報告: \`${basename(reportFile)}\``,
+    `專案: \`${projectDir || '(未關聯，僅報告 + diff)'}\``,
+    '',
+  ];
+  history.forEach((h, i) => {
+    lines.push(`### Q${i + 1}: ${h.q}`, '', h.a, '');
+  });
+  lines.push('---', footerLine(engine, totalSec, totalUsage), '');
+
+  if (history.length) {
+    const prev = existsSync(chatFile) ? readFileSync(chatFile, 'utf8').replace(/\s+$/, '') + '\n\n---\n\n' : '';
+    mkdirSync(dirname(chatFile), { recursive: true });
+    writeFileSync(chatFile, prev + lines.join('\n'));
+    console.log(`✅ 聊天紀錄已儲存至 ${chatFile}（共 ${history.length} 輪）`);
+  } else {
+    console.log('   → 無任何問答，不儲存紀錄');
+  }
+  printSummaryFooter(engine, totalSec, totalUsage);
+
+  if (cloneCleanup && projectDir) rmSync(projectDir, { recursive: true, force: true });
+}
+
+/**
+ * 分析結束後的三選一選單：驗證 / 聊天 / 結束。
+ * @param {{ reportFile: string, reportText: string, prDiff: string, engine: object }} ctx
+ */
+async function postReviewMenu({ reportFile, reportText, prDiff, engine }) {
+  const bugCount = countBugs(reportText);
+  if (bugCount > 0) {
+    console.log('');
+    console.log(`🔍 發現 ${bugCount} 個 🔴 BUG 級問題`);
+  } else {
+    console.log('');
+    console.log('✅ 沒有 🔴 BUG 級問題');
+  }
+  // 執行動作後預設切回結束，避免習慣性 Enter 誤觸燒 token 的驗證/聊天
+  let defaultChoice = bugCount > 0 ? '1' : '3';
+  for (;;) {
+    console.log('');
+    console.log('接下來？');
+    console.log('  [1] 深度驗證');
+    console.log('  [2] 跟 AI 聊天（基於這份報告 + 原始 diff）');
+    console.log('  [3] 結束');
+    console.log('');
+    const choice = await ask(`選擇 [1-3]（直接 Enter 為 ${defaultChoice}）: `, defaultChoice);
+    if (choice === '1') {
+      await cmdVerify(reportFile, null, engine);
+      defaultChoice = '3';
+    } else if (choice === '2') {
+      await cmdChat(reportFile, reportText, prDiff, engine);
+      defaultChoice = '3';
+    } else if (choice === '3') {
+      console.log(`💡 稍後可執行: ./verify-bug.command ${reportFile}`);
+      return;
+    } else {
+      console.log(`   ❌ 無效的選擇: ${choice}`);
+    }
+  }
 }
 
 // ── main ──────────────────────────────────────────────────
