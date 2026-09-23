@@ -845,28 +845,34 @@ async function cmdReview() {
     const baseReport = prUrl.replace(/_(verify|chat)\.md$/i, '.md');
     const targetReport = existsSync(baseReport) ? baseReport : prUrl;
     console.log(`   → 既有報告：${targetReport}`);
-    await cmdShare(targetReport);
-    return;
+    console.log('');
+    console.log('接下來？');
+    console.log('  [1] 產生分享連結（GitHub Gist）');
+    console.log('  [2] 跟 AI 聊天（基於這份報告 + PR 目前的 diff）');
+    console.log('');
+    // 與 postReviewMenu 一致：無效輸入重問，不直接結束
+    for (;;) {
+      const choice = await ask('選擇 [1-2]（直接 Enter 為 1）: ', '1');
+      if (choice === '1') {
+        await cmdShare(targetReport);
+        return;
+      }
+      if (choice === '2') {
+        await cmdChatFromReport(targetReport);
+        return;
+      }
+      console.log(`   ❌ 無效的選擇: ${choice}`);
+    }
   }
 
-  const repoMatch = prUrl.match(/github\.com\/([^/]+\/[^/]+)/);
-  const numMatch = prUrl.match(/\/pull\/(\d+)/);
-  if (!repoMatch || !numMatch) {
+  const pr = parsePrUrl(prUrl);
+  if (!pr) {
     console.log('❌ 無法解析 PR 連結');
     return;
   }
-  const repo = repoMatch[1];
-  const prNumber = numMatch[1];
+  const { repo, prNumber } = pr;
 
-  const cfg = loadApiConfig();
-  const cachedIdx = parseInt(cfg.ENGINE || '1', 10);
-  const engine = await pickEngine(
-    ['claude-sonnet', 'claude-opus', 'opencode', 'api'],
-    cachedIdx,
-  );
-  // Save selected engine index back
-  const idxByKind = { 'claude-sonnet': 1, 'claude-opus': 2, 'opencode': 3, 'api': 4 };
-  saveApiConfig({ ...loadApiConfig(), ENGINE: String(idxByKind[engine.kind]) });
+  const engine = await pickAndRememberEngine();
 
   console.log(`   → 使用: ${engineLabel(engine)}`);
   console.log('');
@@ -1060,9 +1066,9 @@ async function resolveProjectDir(reportText, projectDirArg) {
   let projectDir = projectDirArg;
   let cloneCleanup = false;
   if (!projectDir) {
-    const metaMatch = reportText.match(/<!--\s*verify-meta:\s*repo=(\S+)\s+branch=(\S+?)\s*-->/);
-    if (metaMatch) {
-      const [, repo, branch] = metaMatch;
+    const meta = parseVerifyMeta(reportText);
+    if (meta) {
+      const { repo, branch } = meta;
       console.log(`📂 從報告取得 repo: ${repo} (${branch})`);
       console.log('   正在 clone...');
       projectDir = mkdtempSync(join(tmpdir(), 'verify-clone-'));
