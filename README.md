@@ -63,7 +63,7 @@ review-pr.bat
 ### Step 1：PR Review
 
 ```
-📋 貼上 PR 連結（貼既有 .md 報告路徑則改走分享流程）
+📋 貼上 PR 連結（貼既有 .md 報告路徑則改選：[1] 分享連結 / [2] 跟 AI 聊天）
         ↓
 🤖 選擇 AI 引擎
    [1] Claude Sonnet（預設）
@@ -112,17 +112,25 @@ review-pr.bat
 
 ### Step 3：AI 聊天（chat）
 
-針對已完成的 review，與 AI 多輪問答（基於 review 報告 + 原始 diff）：
+針對已完成的 review，與 AI 多輪問答（基於 review 報告 + 原始 diff）。
+可從 Step 1 的選單進入（沿用分析引擎），或貼既有報告路徑進入（選一次引擎；抓的是 PR 目前的 diff，review 後若有新 commit 可能與報告不一致）：
 
 ```
-💬 進場即備好專案原始碼（與驗證同一套解析：報告 metadata 自動 clone）
-        ↓
-💬 多輪問答（沿用分析引擎，不重選；歷史上限 20 輪）
-   追問 diff 細節直接答，超出 diff 範圍則讀原始碼查證
-        ↓
-   輸入 exit / quit / q 結束
-        ↓
-📝 聊天紀錄追加儲存 + 刪除暫存 clone 目錄
+Claude / opencode
+   💬 進場即備好專案原始碼（與驗證同一套解析：報告 metadata 自動 clone）
+           ↓
+   開啟原生互動 CLI（thinking／工具進度由原生顯示）
+      - 報告 + diff 寫入暫存檔，首句 prompt 請 AI 先讀
+      - Claude 沿用所選模型與 effort；opencode v2 介面無法指定模型，使用其預設（可在介面內切換）
+      - 依該 CLI 自身方式退出，問答紀錄保留在該 CLI 的 session
+           ↓
+   🧹 刪除暫存 clone 目錄與上下文暫存檔
+
+OpenAI 相容 API（無法讀檔，不 clone，僅依報告 + diff 回答）
+   💬 內建聊天（邊生成邊顯示，等待期顯示經過時間；歷史上限 20 輪）
+      - 服務不支援串流時自動改一次性回覆
+           ↓
+   輸入 exit / quit / q 結束，紀錄追加儲存至 _chat.md
 ```
 
 ### Step 4：產生分享連結（GitHub Gist）
@@ -153,7 +161,7 @@ Review 報告儲存為 `PR_{number}_{timestamp}.md`，包含：
 - 每個 🔴 問題的驗證結論與分析過程
 - 驗證摘要統計
 
-聊天紀錄儲存為 `PR_{number}_{timestamp}_chat.md`（多次聊天則追加），包含：
+聊天紀錄（僅 OpenAI 相容 API 引擎；Claude／opencode 的紀錄在各自 session）儲存為 `PR_{number}_{timestamp}_chat.md`（多次聊天則追加），包含：
 
 - 逐輪問答
 - 使用引擎與 tokens / 費用統計
