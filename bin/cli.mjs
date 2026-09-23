@@ -135,8 +135,35 @@ function stderrNote(stderr) {
   return t ? `\n   stderr: ${t}` : '';
 }
 
+const SPINNER_CHARS = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+
+/**
+ * 可中途停止的等待指示：串流收到第一段文字就停，避免 `\r` 覆寫已印出的內容
+ * （withSpinner 會轉到 promise 結束，不適用串流）。非 TTY 不顯示。
+ * @param {string} label
+ * @returns {() => void} stop：清掉指示行，可重複呼叫
+ */
+function startWaitIndicator(label) {
+  if (!process.stdout.isTTY) return () => {};
+  const start = Date.now();
+  let i = 0;
+  const render = () => {
+    const elapsed = Math.floor((Date.now() - start) / 1000);
+    process.stdout.write(`\r   ⏳ ${label} ${SPINNER_CHARS[i++ % SPINNER_CHARS.length]} ${fmtTime(elapsed)} `);
+  };
+  render();
+  const timer = setInterval(render, 100);
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    process.stdout.write(`\r${' '.repeat(dispWidth(label) + 24)}\r`);
+  };
+}
+
 async function withSpinner(label, promise) {
-  const chars = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+  const chars = SPINNER_CHARS;
   const start = Date.now();
   let i = 0;
   let done = false;
@@ -429,29 +456,98 @@ async function runOpencode(prompt, cwd, { model, variant } = {}) {
   return { text, usage };
 }
 
-async function runOpenAICompat({ API_BASE, API_KEY, API_MODEL }, prompt) {
+/**
+ * OpenAI 相容 API。帶 onText 才走 SSE 串流逐段回呼（聊天用）；review／verify 不帶，
+ * 維持一次性請求且不送 stream 參數（部分服務不認得 stream_options 會直接 400）。
+ * @param {{ API_BASE: string, API_KEY?: string, API_MODEL: string }} api
+ * @param {string} prompt
+ * @param {{ onText?: (t: string) => void }} [events]
+ * @returns {Promise<{ text: string, usage: { input_tokens: number, output_tokens: number, cost_usd: number } }>}
+ */
+async function runOpenAICompat({ API_BASE, API_KEY, API_MODEL }, prompt, { onText } = {}) {
   const url = `${API_BASE}/chat/completions`;
   const headers = { 'Content-Type': 'application/json' };
   if (API_KEY) headers.Authorization = `Bearer ${API_KEY}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ model: API_MODEL, messages: [{ role: 'user', content: prompt }] }),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`API ${res.status}: ${body.slice(0, 500)}`);
-  }
-  const json = await res.json();
-  if (json.error?.message) throw new Error(`API 錯誤: ${json.error.message}`);
-  return {
-    text: json.choices?.[0]?.message?.content || '',
-    usage: {
-      input_tokens: json.usage?.prompt_tokens || 0,
-      output_tokens: json.usage?.completion_tokens || 0,
-      cost_usd: 0,
-    },
+  const post = async stream => {
+    const body = { model: API_MODEL, messages: [{ role: 'user', content: prompt }] };
+    if (stream) Object.assign(body, { stream: true, stream_options: { include_usage: true } });
+    try {
+      return await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    } catch (e) {
+      throw new Error(`API 連線失敗：${e.message || e}`);
+    }
   };
+  let streaming = !!onText;
+  let res = await post(streaming);
+  // 不認得 stream／stream_options 的服務（如舊版 Azure api-version）回 400；此時尚未生成、不耗 token，
+  // 改一次性請求重試一次。真正的 400（模型名錯、超出 context）重試後照樣報錯。
+  if (streaming && res.status === 400) {
+    await res.text().catch(() => '');
+    streaming = false;
+    res = await post(false);
+  }
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`API ${res.status}: ${errBody.slice(0, 500)}`);
+  }
+  // 未要求串流、已降級，或服務忽略 stream 參數仍回一次性 JSON
+  if (!streaming || !(res.headers.get('content-type') || '').includes('text/event-stream')) {
+    const json = await res.json();
+    if (json.error?.message) throw new Error(`API 錯誤: ${json.error.message}`);
+    const text = json.choices?.[0]?.message?.content || '';
+    if (onText && text) onText(text);
+    return {
+      text,
+      usage: {
+        input_tokens: json.usage?.prompt_tokens || 0,
+        output_tokens: json.usage?.completion_tokens || 0,
+        cost_usd: 0,
+      },
+    };
+  }
+
+  let text = '';
+  const usage = { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+  // OpenAI SSE 每個 `data:` 行即一筆完整 JSON，按行處理即可；trim 順便去掉 CRLF 的 `\r`
+  const handleLine = raw => {
+    const line = raw.trim();
+    if (!line.startsWith('data:')) return;
+    const data = line.slice(5).trim();
+    if (!data || data === '[DONE]') return;
+    let obj;
+    try { obj = JSON.parse(data); } catch { return; }
+    if (obj.error?.message) throw new Error(`API 錯誤: ${obj.error.message}`);
+    const delta = obj.choices?.[0]?.delta?.content || '';
+    if (delta) {
+      text += delta;
+      onText(delta);
+    }
+    if (obj.usage) {
+      usage.input_tokens = obj.usage.prompt_tokens || usage.input_tokens;
+      usage.output_tokens = obj.usage.completion_tokens || usage.output_tokens;
+    }
+  };
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // TextDecoder stream 模式會保留被切開的多位元組字元，下一塊再接回
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      lines.forEach(handleLine);
+    }
+    buf += decoder.decode();
+    buf.split('\n').forEach(handleLine);
+  } catch (e) {
+    // 中途出錯（error 事件、斷線）主動取消，不讓連線掛到 GC 才釋放
+    await reader.cancel().catch(() => {});
+    throw e;
+  }
+  return { text, usage };
 }
 
 // engine: { kind: 'claude-sonnet'|'claude-opus'|'opencode'|'api', api?: {...}, claude?: { effort }, opencode?: { model, variant } }
@@ -555,6 +651,124 @@ function printSummaryFooter(engine, totalSec, usage) {
   console.log(`📊 Tokens: ${fmtNum(usage.input_tokens)} in / ${fmtNum(usage.output_tokens)} out | 費用: $${usage.cost_usd.toFixed(4)}`);
 }
 
+// ── Chat live rendering（零依賴類 CLI 排版） ────────────────────
+// 目標：API 聊天文字邊生成邊印、可讀換行。存檔一律用原始 markdown（不含 ANSI），
+// 顯示層才加色彩與折行。
+
+const ANSI_RE = /\u001b\[[0-9;]*m/g;
+const useColor = !!process.stdout.isTTY && !process.env.NO_COLOR;
+
+function paint(s, ...codes) {
+  if (!useColor || !codes.length) return s;
+  return `\u001b[${codes.join(';')}m${s}\u001b[0m`;
+}
+
+/**
+ * 顯示寬度：ASCII 1、CJK／全形 2。
+ * @param {string} s 不含 ANSI 的純文字
+ * @returns {number}
+ */
+function dispWidth(s) {
+  let w = 0;
+  for (const ch of String(s)) {
+    const cp = ch.codePointAt(0);
+    w += (cp > 0x1100 &&
+      (cp >= 0x2E80 && cp <= 0xA4CF || cp >= 0xAC00 && cp <= 0xD7A3 ||
+       cp >= 0xF900 && cp <= 0xFAFF || cp >= 0xFE30 && cp <= 0xFE4F ||
+       cp >= 0xFF00 && cp <= 0xFF60 || cp >= 0xFFE0 && cp <= 0xFFE6 ||
+       cp >= 0x20000 && cp <= 0x3FFFD)) ? 2 : 1;
+  }
+  return w;
+}
+
+/**
+ * 行內 markdown 淡渲染（只處理單行，代碼圍欄由上層狀態處理）。
+ * @param {string} line
+ * @returns {string}
+ */
+function formatInline(line) {
+  let s = line.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => `${alt} (${url})`);
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, t, url) => `${t} (${url})`);
+  s = s.replace(/(`+)([^`]*?)\1/g, (_, _q, code) => paint(code, 33));
+  s = s.replace(/\*\*([^*]+)\*\*/g, (_, b) => paint(b, 1));
+  return s;
+}
+
+/**
+ * 逐行即時渲染器：呼叫端把文字碎片餵入，完整行即排版印出。
+ * 長單段（CJK 常整段無換行）靠 MAX_BUF 強制斷行，避免等到最後才爆量傾印。
+ * @returns {{ text: (chunk: string) => void, flush: () => void }}
+ */
+function makeLiveRenderer() {
+  const width = Math.max(40, Math.min((process.stdout.columns || 100) - 4, 110));
+  let buf = '';
+  let inFence = false;
+  const MAX_BUF = 240;
+
+  const printLine = raw => {
+    const line = raw.replace(/\s+$/, '');
+    if (/^```/.test(line)) {
+      inFence = !inFence;
+      console.log(paint('─'.repeat(Math.min(width, 40)), 2));
+      return;
+    }
+    if (inFence) { console.log(line); return; }
+    if (!line) { console.log(''); return; }
+    let styled;
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) styled = paint(`${'▎'.repeat(h[1].length)} ${h[2]}`, 1, 36);
+    else if (/^>\s?/.test(line)) styled = paint(`│ ${line.replace(/^>\s?/, '')}`, 2);
+    // 清單：先做行內渲染再替項目符號上色（反過來 formatInline 的 regex 會吃到 ANSI）
+    else if (/^(\s*[-*]|\s*\d+[.)])\s+/.test(line)) {
+      styled = formatInline(line).replace(/^(\s*)([-*]|\d+[.)])(\s+)/, (_, ind, mark, sp) => `${ind}${paint(mark, 36)}${sp}`);
+    } else if (/^\|.*\|/.test(line)) styled = line;
+    else styled = formatInline(line);
+    const plain = styled.replace(ANSI_RE, '');
+    if (dispWidth(plain) <= width) { console.log(styled); return; }
+    // 含 ANSI 時逐字累積、顯示寬度達標即換行（ANSI 零寬）。
+    const segs = [''];
+    let w = 0;
+    const tokens = styled.split(/(\u001b\[[0-9;]*m)/g);
+    for (const tok of tokens) {
+      if (!tok) continue;
+      if (/^\u001b\[[0-9;]*m$/.test(tok)) { segs[segs.length - 1] += tok; continue; }
+      for (const ch of tok) {
+        const cw = dispWidth(ch);
+        if (w + cw > width) { segs.push(''); w = 0; }
+        segs[segs.length - 1] += ch;
+        w += cw;
+      }
+    }
+    for (const s of segs) console.log(s);
+  };
+
+  return {
+    text(chunk) {
+      buf += String(chunk || '').replace(/\r\n?/g, '\n');
+      for (;;) {
+        const nl = buf.indexOf('\n');
+        if (nl >= 0) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          printLine(line);
+        } else if (!inFence && buf.length >= MAX_BUF) {
+          // 無換行大段：找最近空白或強制切一段，避免結尾洗版。
+          let cut = Math.max(buf.lastIndexOf(' ', MAX_BUF), buf.lastIndexOf('　', MAX_BUF));
+          if (cut < MAX_BUF * 0.4) cut = MAX_BUF;
+          // 不可切在 surrogate pair 中間（emoji 等），否則兩半各印成亂碼
+          if (/[\uD800-\uDBFF]/.test(buf[cut - 1])) cut--;
+          const line = buf.slice(0, cut);
+          buf = buf.slice(cut).replace(/^ +/, '');
+          printLine(line);
+        } else break;
+      }
+    },
+    flush() {
+      if (buf) { printLine(buf); buf = ''; }
+    },
+  };
+}
+
 // ── Command: review ───────────────────────────────────────
 
 /**
@@ -572,9 +786,43 @@ function looksLikeReviewReport(file) {
   }
 }
 
+/**
+ * 解析 GitHub PR 連結。
+ * @param {string} url
+ * @returns {{ repo: string, prNumber: string } | null}
+ */
+function parsePrUrl(url) {
+  const repoMatch = String(url).match(/github\.com\/([^/]+\/[^/]+)/);
+  const numMatch = String(url).match(/\/pull\/(\d+)/);
+  return repoMatch && numMatch ? { repo: repoMatch[1], prNumber: numMatch[1] } : null;
+}
+
+/**
+ * 解析報告尾的 `<!-- verify-meta: repo=… branch=… -->`（與 share-meta 分開，勿混用）。
+ * @param {string} reportText
+ * @returns {{ repo: string, branch: string } | null}
+ */
+function parseVerifyMeta(reportText) {
+  const m = String(reportText).match(/<!--\s*verify-meta:\s*repo=(\S+)\s+branch=(\S+?)\s*-->/);
+  return m ? { repo: m[1], branch: m[2] } : null;
+}
+
+/**
+ * 選引擎並記住選擇（下次預設沿用）。
+ * @param {string} [label]
+ * @returns {Promise<object>} engine
+ */
+async function pickAndRememberEngine(label) {
+  const kinds = ['claude-sonnet', 'claude-opus', 'opencode', 'api'];
+  const cachedIdx = parseInt(loadApiConfig().ENGINE || '1', 10);
+  const engine = await pickEngine(kinds, cachedIdx, label);
+  saveApiConfig({ ...loadApiConfig(), ENGINE: String(kinds.indexOf(engine.kind) + 1) });
+  return engine;
+}
+
 async function cmdReview() {
   const totalStart = Date.now();
-  console.log('📋 請貼上 PR 連結（或既有 .md 報告路徑以分享）：');
+  console.log('📋 請貼上 PR 連結（或既有 .md 報告路徑以分享／聊天）：');
   const rawInput = await ask('');
   if (!rawInput) {
     console.log('❌ 未輸入 PR 連結');
@@ -587,7 +835,7 @@ async function cmdReview() {
     return;
   }
 
-  // 既有報告路徑：分流至分享節點，不跑 review
+  // 既有報告路徑：分享或聊天，不跑 review
   if (/\.md$/i.test(prUrl)) {
     if (!looksLikeReviewReport(prUrl)) {
       console.log(`❌ 不是 PR review 報告：${prUrl}`);
@@ -989,48 +1237,155 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
 }
 
 // ── Command: chat ─────────────────────────────────────────
-// 基於 review 報告 + 原始 diff 的多輪問答；進場即備好 codebase（同 verify），失敗才降級。
+// 基於 review 報告 + PR diff 的多輪問答。claude／opencode 進場即備好 codebase（同 verify，
+// 失敗才降級）後交給原生 CLI；API 引擎無法讀檔，不 clone，走內建串流迴圈。
 
 const CHAT_MAX_HISTORY = 20;
 const CHAT_EXIT_KEYS = new Set(['exit', 'quit', 'q', ':q']);
 
 /**
- * @param {string} reportFile review 報告路徑（聊天紀錄以此衍生檔名）
- * @param {string} reportText review 報告全文
- * @param {string} prDiff 截斷後的 PR diff（與 review 同一份）
- * @param {object} engine 沿用分析引擎，不重選
+ * 由既有報告獨立進入聊天：報告內無 diff，從檔名 PR 編號＋verify-meta 取回。
+ * 取不到時改問 PR 連結；直接 Enter 取消。
+ * @param {string} reportFile review 報告路徑
  */
-async function cmdChat(reportFile, reportText, prDiff, engine) {
-  const totalStart = Date.now();
-  console.log('');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('💬 AI 聊天（基於這份分析 + 原始 diff）');
-  console.log(`   → 使用: ${engineLabel(engine)}`);
-  console.log('   輸入 exit / quit / q 結束聊天');
-  console.log('');
+async function cmdChatFromReport(reportFile) {
+  const reportText = readFileSync(reportFile, 'utf8');
+  const prNumberFromName = (basename(reportFile).match(/PR_(\d+)_/) || [])[1];
+  const meta = parseVerifyMeta(reportText);
+  let pr = meta && prNumberFromName ? { repo: meta.repo, prNumber: prNumberFromName } : null;
 
-  // 聊天一律先備好 codebase（clone 本身不耗 token，AI 讀檔時才耗）；失敗則降級為純報告 + diff
-  let projectDir;
-  let cloneCleanup = false;
-  {
-    // 以磁碟檔案為準（內含 verify-meta 可自動 clone），記憶體文字僅為 fallback
-    let metaSource = reportText;
-    try {
-      if (existsSync(reportFile)) metaSource = readFileSync(reportFile, 'utf8');
-    } catch { /* 沿用記憶體文字 */ }
-    const resolved = await resolveProjectDir(metaSource);
-    if (resolved) {
-      projectDir = resolved.projectDir;
-      cloneCleanup = resolved.cloneCleanup;
-    } else {
-      console.log('   → 無法取得原始碼，僅用報告 + diff 回答');
+  // 自動取不到（改過檔名或報告太舊無 meta）才問 PR 連結
+  if (!pr) {
+    console.log('   ⚠️  無法從報告推導 repo／PR 編號');
+    const link = (await ask('📋 請貼上 PR 連結（直接 Enter 取消）：')).replace(/^["']|["']$/g, '').trim();
+    if (!link) {
+      console.log('   → 已取消聊天');
+      return;
+    }
+    pr = parsePrUrl(link);
+    if (!pr) {
+      console.log('❌ 無法解析 PR 連結');
+      return;
     }
   }
+  const { repo, prNumber } = pr;
 
-  const cwd = projectDir || undefined;
-  const codeNote = projectDir
-    ? `已關聯專案原始碼（${projectDir}），追問 diff 以外的程式時可讀檔查證。`
-    : '未關聯專案原始碼，只能依據下方報告與 diff 回答；若問題超出 diff 範圍，請如實說明需要關聯原始碼或進入深度驗證。';
+  console.log(`📡 取回 PR diff（${repo} #${prNumber}）...`);
+  const diffRes = await sh('gh', ['pr', 'diff', prNumber, '--repo', repo], { captureStderr: true });
+  if (diffRes.code !== 0) {
+    console.log(`❌ 無法取得 diff: ${diffRes.stderr}`);
+    return;
+  }
+  // 與 review 同一套過濾＋截斷，聊天看到的 diff 才一致
+  const { diff: filteredDiff, excluded } = filterDiff(diffRes.stdout);
+  const { diff: prDiff, truncated } = capDiff(filteredDiff);
+  console.log(`   ✓ ${prDiff.split('\n').length} 行 diff`);
+  if (excluded.length) {
+    console.log(`   ⏭  已排除 ${excluded.length} 個檔案: ${excluded.slice(0, 5).join(', ')}${excluded.length > 5 ? ' …' : ''}`);
+  }
+  if (truncated) {
+    console.log(`   ✂  diff 過長，已截斷 ${fmtNum(truncated)} 行`);
+  }
+  // 報告未存當時的 head SHA，無從比對；只能明講這是現況 diff，交由使用者與 AI 留意
+  console.log('   ℹ️  這是 PR 目前的 diff；review 後若有新 commit，可能與報告內容不一致');
+
+  const engine = await pickAndRememberEngine('選擇聊天引擎');
+  await cmdChat(reportFile, reportText, prDiff, engine, {
+    diffNote: '注意：下方 diff 是 PR 目前的版本，review 之後若有新 commit，可能與報告描述對不上；遇到不一致請直接指出，不要硬套報告結論。',
+  });
+}
+
+/**
+ * 原生 CLI 接管：上下文（報告＋diff）寫暫存檔，argv 只帶引用它的短 prompt，
+ * 不觸 Windows 命令列 32KB 上限；Windows 解析沿用 resolveCommand＋quoteArg。
+ * 模型：claude 帶 --model／--effort；opencode v1 TUI 帶 --model，
+ * v2 TUI 不收 --model（實測 v2.0.14 視為未知旗標、直接印 help 退出），改提示於介面內切換。
+ * 上下文檔位置：claude 一律放暫存目錄並 --add-dir；opencode TUI 無 --add-dir，
+ * 自有的暫存 clone 直接寫進專案內（免讀外部檔授權），使用者自備的專案不寫入以免弄髒工作區。
+ * @param {{ engine: object, projectDir?: string, ownsProjectDir?: boolean, reportText: string, prDiff: string, codeNote: string }} ctx
+ * @returns {Promise<number>} 原生程序結束碼
+ */
+async function runNativeChat({ engine, projectDir, ownsProjectDir = false, reportText, prDiff, codeNote }) {
+  const isOpencode = engine.kind === 'opencode';
+  const ctxInProject = isOpencode && ownsProjectDir && !!projectDir;
+  const ctxDir = ctxInProject ? projectDir : mkdtempSync(join(tmpdir(), 'chat-ctx-'));
+  const ctxFile = join(ctxDir, ctxInProject ? '.ai-pr-review-context.md' : 'context.md');
+  try {
+    writeFileSync(ctxFile, [
+      '# PR 聊天上下文（ai-pr-review 產生）',
+      '',
+      codeNote,
+      '請用繁體中文回答，程式碼片段、檔案路徑、技術術語維持英文。',
+      '',
+      '## Review 報告',
+      '',
+      reportText,
+      '',
+      '## PR Diff',
+      '',
+      '```diff',
+      prDiff,
+      '```',
+      '',
+    ].join('\n'));
+    const firstPrompt = `請先讀 ${ctxFile}（內含 PR review 報告與 PR diff），然後與我多輪問答`;
+
+    const cmd = isOpencode ? 'opencode' : 'claude';
+    let args;
+    if (isOpencode) {
+      const model = String(engine.opencode?.model || '').trim();
+      args = ['--prompt', firstPrompt];
+      if (await opencodeMajor() >= 2) {
+        if (model || engine.opencode?.variant) {
+          console.log('   ⚠️  opencode v2 互動介面不支援指定模型，將使用 opencode 預設模型（可在介面內切換）');
+        }
+      } else if (model) {
+        args.unshift('--model', model.split('#')[0]);
+      }
+      if (projectDir && !ctxInProject) {
+        console.log('   ℹ️  上下文檔位於專案外，若 opencode 詢問讀取外部檔案的授權，允許即可');
+      }
+    } else {
+      // --add-dir 是可變長度參數，後面須緊接其他旗標，否則會把 prompt 當成目錄吃掉
+      args = ['--add-dir', ctxDir, '--model', engine.kind === 'claude-opus' ? 'opus' : 'sonnet'];
+      if (engine.claude?.effort) args.push('--effort', engine.claude.effort);
+      args.push(firstPrompt);
+    }
+
+    // 無專案時以 ctxDir 為工作目錄：避免落在本工具目錄（opencode 會載入本專案 AGENTS.md，且該處有 .api-config 明文金鑰）
+    const workDir = projectDir || ctxDir;
+    const { file, shell } = resolveCommand(cmd);
+    console.log(`   → 開啟原生 ${cmd} 互動（依該 CLI 自身方式退出後回到這裡）`);
+    return await new Promise(resolvePromise => {
+      const child = spawn(shell ? quoteArg(file) : file, shell ? args.map(quoteArg) : args, {
+        cwd: workDir,
+        shell,
+        stdio: 'inherit',
+      });
+      child.on('error', e => {
+        console.log(`❌ 原生 CLI 啟動失敗：${e.message || e}`);
+        resolvePromise(1);
+      });
+      child.on('close', c => resolvePromise(c ?? 1));
+    });
+  } finally {
+    // 寫在專案內時 ctxDir 就是專案目錄，只能刪檔，不可整個目錄遞迴刪除
+    rmSync(ctxInProject ? ctxFile : ctxDir, { recursive: !ctxInProject, force: true });
+  }
+}
+
+/**
+ * API 引擎聊天迴圈（無原生 CLI 可接管）：串流逐段印出，結束後追加存檔至 `_chat.md`。
+ * API 只收文字、無法讀檔，因此不備原始碼，僅依報告 + diff 回答。
+ * @param {{ reportFile: string, reportText: string, prDiff: string, engine: object, totalStart: number, diffNote?: string }} ctx
+ */
+async function chatViaApi({ reportFile, reportText, prDiff, engine, totalStart, diffNote }) {
+  const codeNote = [
+    '你無法讀取專案原始碼，只能依據下方報告與 diff 回答；若問題超出 diff 範圍，請如實說明，並建議改用可讀原始碼的 Claude／opencode 聊天或進入深度驗證。',
+    diffNote,
+  ].filter(Boolean).join('\n');
+  console.log('   → API 引擎無法讀取原始碼，不 clone，僅用報告 + diff 回答');
+  console.log('   輸入 exit / quit / q 結束聊天');
   console.log('');
   console.log('💬 開始聊天（空行不發送）：');
   console.log('');
@@ -1072,19 +1427,32 @@ async function cmdChat(reportFile, reportText, prDiff, engine) {
     ].join('\n');
 
     let answer;
+    const live = makeLiveRenderer();
+    const start = Date.now();
+    // 推理模型可能先安靜數十秒（reasoning 不顯示），等待期顯示經過時間，第一段文字到達即停
+    const stopWaiting = startWaitIndicator(`${engineLabel(engine)} 思考中`);
     try {
-      const res = await withSpinner('思考中', runEngine(engine, prompt, cwd));
+      const res = await runOpenAICompat(engine.api, prompt, {
+        onText: t => {
+          stopWaiting();
+          live.text(t);
+        },
+      });
+      stopWaiting();
+      live.flush();
       answer = res.text;
       totalUsage.input_tokens += res.usage.input_tokens;
       totalUsage.output_tokens += res.usage.output_tokens;
       totalUsage.cost_usd += res.usage.cost_usd;
+      console.log(paint(`   ✓ 完成 (${Math.floor((Date.now() - start) / 1000)}s)`, 2));
     } catch (e) {
+      stopWaiting();
+      // 中途出錯時已收到的半行也要印出，否則使用者看不到斷在哪
+      live.flush();
       console.log(`❌ ${e.message || e}`);
       continue;
     }
 
-    console.log('');
-    console.log(answer.trim());
     console.log('');
     history.push({ q, a: answer.trim() });
     if (history.length > CHAT_MAX_HISTORY) {
@@ -1099,7 +1467,7 @@ async function cmdChat(reportFile, reportText, prDiff, engine) {
     `## 💬 聊天紀錄`,
     '',
     `來源報告: \`${basename(reportFile)}\``,
-    `專案: \`${projectDir || '(未關聯，僅報告 + diff)'}\``,
+    '專案: `(API 引擎不讀原始碼，僅報告 + diff)`',
     '',
   ];
   history.forEach((h, i) => {
@@ -1116,8 +1484,67 @@ async function cmdChat(reportFile, reportText, prDiff, engine) {
     console.log('   → 無任何問答，不儲存紀錄');
   }
   printSummaryFooter(engine, totalSec, totalUsage);
+}
 
-  if (cloneCleanup && projectDir) rmSync(projectDir, { recursive: true, force: true });
+/**
+ * @param {string} reportFile review 報告路徑（聊天紀錄以此衍生檔名）
+ * @param {string} reportText review 報告全文
+ * @param {string} prDiff 截斷後的 PR diff（review 後直接聊天時與 review 同一份；由既有報告進入時為 PR 目前版本）
+ * @param {object} engine 沿用分析引擎，不重選
+ * @param {{ diffNote?: string }} [options] diffNote：給 AI 的 diff 版本提醒（由既有報告進入時帶）
+ */
+async function cmdChat(reportFile, reportText, prDiff, engine, { diffNote } = {}) {
+  const totalStart = Date.now();
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('💬 AI 聊天（基於這份分析 + PR diff）');
+  console.log(`   → 使用: ${engineLabel(engine)}`);
+  console.log('');
+
+  // API 引擎無原生 CLI 可接管、也無法讀檔，走內建串流迴圈，不 clone
+  if (engine.kind === 'api') {
+    await chatViaApi({ reportFile, reportText, prDiff, engine, totalStart, diffNote });
+    return;
+  }
+
+  // claude／opencode 交給原生互動（thinking／工具進度由原生顯示），可讀檔，
+  // 因此先備好 codebase（clone 本身不耗 token，AI 讀檔時才耗）；失敗則降級為純報告 + diff
+  let projectDir;
+  let cloneCleanup = false;
+  {
+    // 以磁碟檔案為準（內含 verify-meta 可自動 clone），記憶體文字僅為 fallback
+    let metaSource = reportText;
+    try {
+      if (existsSync(reportFile)) metaSource = readFileSync(reportFile, 'utf8');
+    } catch { /* 沿用記憶體文字 */ }
+    const resolved = await resolveProjectDir(metaSource);
+    if (resolved) {
+      projectDir = resolved.projectDir;
+      cloneCleanup = resolved.cloneCleanup;
+    } else {
+      console.log('   → 無法取得原始碼，僅用報告 + diff 回答');
+    }
+  }
+
+  const codeNote = [
+    projectDir
+      ? `已關聯專案原始碼（${projectDir}），追問 diff 以外的程式時可讀檔查證。`
+      : '未關聯專案原始碼，只能依據下方報告與 diff 回答；若問題超出 diff 範圍，請如實說明需要關聯原始碼或進入深度驗證。',
+    diffNote,
+  ].filter(Boolean).join('\n');
+
+  try {
+    console.log('');
+    console.log(`💬 原生 CLI 接管（基於這份分析 + PR diff${projectDir ? ' + 已關聯原始碼' : ''}）：`);
+    console.log('');
+    const code = await runNativeChat({ engine, projectDir, ownsProjectDir: cloneCleanup, reportText, prDiff, codeNote });
+    console.log('');
+    // 逐輪內容與用量留在原生 CLI 自身的 session，這裡無可存內容，不寫 _chat.md
+    console.log(`   → 原生會話結束（exit ${code}），問答紀錄保留在該 CLI 的 session`);
+    console.log(`⏱  總耗時 ${fmtTime(Math.floor((Date.now() - totalStart) / 1000))}`);
+  } finally {
+    if (cloneCleanup && projectDir) rmSync(projectDir, { recursive: true, force: true });
+  }
 }
 
 // ── Command: share ──────────────────────────────────────────
