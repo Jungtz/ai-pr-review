@@ -24,8 +24,8 @@
 
 ## 流程邏輯（改選單前先讀）
 
-- `cmdReview` 入口若收到 `.md` 路徑，先經 `looksLikeReviewReport` 判定，屬實則二選一：`cmdShare`（分享）或 `cmdChatFromReport`（聊天；從檔名 PR 編號＋`verify-meta` 重抓 diff，取不到才問 PR 連結；抓到的是 PR 現況 diff，經 `diffNote` 告知 AI 可能與報告不一致），皆不跑 review；無效輸入重問
-- `cmdReview` 結束進 `postReviewMenu`（驗證／聊天／結束／分享連結，可循環；動作完成後預設切回結束防誤觸）
+- `cmdReview` 入口若收到 `.md` 路徑，先經 `looksLikeReviewReport` 判定，屬實則三選一：`cmdShare`（分享）、`cmdChatFromReport`（聊天；抓到的是 PR 現況 diff，經 `diffNote` 告知 AI 可能與報告不一致）或重新 review（選一次引擎後進 `reviewWithMenu`）；分享／聊天不跑 review；無效輸入重問。聊天與重新 review 都經 `resolvePrFromReport` 由檔名 PR 編號＋`verify-meta` 推導 PR，取不到才問 PR 連結
+- `reviewWithMenu` 以迴圈呼叫 `runReview`（單次 review：取 PR 資料→分析→存報告）再進 `postReviewMenu`（驗證／聊天／結束／分享連結／重新 review，除重新 review 外可循環；動作完成後預設切回結束防誤觸）。選重新 review 時選單回傳 `true`、由迴圈重跑（沿用同一引擎、重抓最新 diff、新報告另存舊報告保留）；重跑失敗（取不到 PR 資料或引擎拋例外）則回到上一份報告的選單，且經 `initialDefault` 固定預設為結束，避免舊報告的 🔴 BUG 讓習慣性 Enter 再觸發深度驗證；首次就失敗則照舊結束／往外拋
 - `cmdVerify`：單次批次驗證，一律全驗
 - `cmdChat` 依引擎分流：claude／opencode 進場即 clone codebase（失敗才降級為報告＋diff），交給原生互動 CLI（`runNativeChat`，stdio 繼承；紀錄留在該 CLI 的 session，不寫 `_chat.md`）；API 引擎無法讀檔，不 clone，走內建串流迴圈（`chatViaApi`，寫 `_chat.md`）
 - 原生接管：claude 帶 `--model`／`--effort`／`--add-dir`（`--add-dir` 為可變長度參數，後面須緊接旗標）；opencode v2 TUI 不收 `--model`（實測 v2.0.14），只有 v1 帶；無專案時 cwd 用暫存目錄，不可落在本工具目錄

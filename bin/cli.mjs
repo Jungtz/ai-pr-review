@@ -808,6 +808,30 @@ function parseVerifyMeta(reportText) {
 }
 
 /**
+ * 由既有報告推導 PR：檔名 PR 編號＋verify-meta 的 repo；取不到（改過檔名或報告太舊無 meta）
+ * 才問 PR 連結，直接 Enter 取消。
+ * @param {string} reportFile
+ * @param {string} reportText
+ * @param {string} actionLabel 取消訊息用的動作名稱（例：聊天）
+ * @returns {Promise<{ repo: string, prNumber: string } | null>}
+ */
+async function resolvePrFromReport(reportFile, reportText, actionLabel) {
+  const prNumberFromName = (basename(reportFile).match(/PR_(\d+)_/) || [])[1];
+  const meta = parseVerifyMeta(reportText);
+  if (meta && prNumberFromName) return { repo: meta.repo, prNumber: prNumberFromName };
+
+  console.log('   ⚠️  無法從報告推導 repo／PR 編號');
+  const link = (await ask('📋 請貼上 PR 連結（直接 Enter 取消）：')).replace(/^["']|["']$/g, '').trim();
+  if (!link) {
+    console.log(`   → 已取消${actionLabel}`);
+    return null;
+  }
+  const pr = parsePrUrl(link);
+  if (!pr) console.log('❌ 無法解析 PR 連結');
+  return pr;
+}
+
+/**
  * 選引擎並記住選擇（下次預設沿用）。
  * @param {string} [label]
  * @returns {Promise<object>} engine
@@ -820,9 +844,12 @@ async function pickAndRememberEngine(label) {
   return engine;
 }
 
+/**
+ * review 指令入口：貼 PR 連結跑 review；貼既有 .md 報告路徑則改選分享／聊天／重新 review。
+ * @returns {Promise<void>}
+ */
 async function cmdReview() {
-  const totalStart = Date.now();
-  console.log('📋 請貼上 PR 連結（或既有 .md 報告路徑以分享／聊天）：');
+  console.log('📋 請貼上 PR 連結（或既有 .md 報告路徑以分享／聊天／重新 review）：');
   const rawInput = await ask('');
   if (!rawInput) {
     console.log('❌ 未輸入 PR 連結');
@@ -835,7 +862,7 @@ async function cmdReview() {
     return;
   }
 
-  // 既有報告路徑：分享或聊天，不跑 review
+  // 既有報告路徑：分享、聊天或重新 review
   if (/\.md$/i.test(prUrl)) {
     if (!looksLikeReviewReport(prUrl)) {
       console.log(`❌ 不是 PR review 報告：${prUrl}`);
@@ -849,16 +876,26 @@ async function cmdReview() {
     console.log('接下來？');
     console.log('  [1] 產生分享連結（GitHub Gist）');
     console.log('  [2] 跟 AI 聊天（基於這份報告 + PR 目前的 diff）');
+    console.log('  [3] 重新 review（重抓最新 diff，另存新報告）');
     console.log('');
     // 與 postReviewMenu 一致：無效輸入重問，不直接結束
     for (;;) {
-      const choice = await ask('選擇 [1-2]（直接 Enter 為 1）: ', '1');
+      const choice = await ask('選擇 [1-3]（直接 Enter 為 1）: ', '1');
       if (choice === '1') {
         await cmdShare(targetReport);
         return;
       }
       if (choice === '2') {
         await cmdChatFromReport(targetReport);
+        return;
+      }
+      if (choice === '3') {
+        const reportPr = await resolvePrFromReport(targetReport, readFileSync(targetReport, 'utf8'), '重新 review');
+        if (reportPr) {
+          // 先讓使用者看到推導結果再選引擎，檔名被改過而推錯 PR 時還來得及 Ctrl+C，不會白燒 token
+          console.log(`   → 重新 review：${reportPr.repo} #${reportPr.prNumber}`);
+          await reviewWithMenu(reportPr, await pickAndRememberEngine());
+        }
         return;
       }
       console.log(`   ❌ 無效的選擇: ${choice}`);
@@ -870,10 +907,49 @@ async function cmdReview() {
     console.log('❌ 無法解析 PR 連結');
     return;
   }
-  const { repo, prNumber } = pr;
 
-  const engine = await pickAndRememberEngine();
+  await reviewWithMenu(pr, await pickAndRememberEngine());
+}
 
+/**
+ * review → 選單迴圈：選單選「重新 review」時回到起點，重抓 diff 再跑一次，新報告另存、舊報告保留。
+ * 重跑失敗（取不到 PR 資料或引擎出錯）時回到上一份報告的選單；首次就失敗則照舊結束／往外拋。
+ * @param {{ repo: string, prNumber: string }} pr
+ * @param {object} engine
+ * @returns {Promise<void>}
+ */
+async function reviewWithMenu(pr, engine) {
+  let latest = null;
+  for (;;) {
+    let result = null;
+    try {
+      result = await runReview(pr, engine);
+    } catch (e) {
+      if (!latest) throw e;
+      console.log('');
+      console.log(`❌ ${e.message || e}`);
+    }
+    if (result) {
+      latest = result;
+    } else if (latest) {
+      console.log(`↩️  重新 review 失敗，回到上一份報告：${latest.reportFile}`);
+    } else {
+      return;
+    }
+    // 回退時預設固定為結束：舊報告若有 🔴 BUG，預設 [1] 會讓習慣性 Enter 再燒一次深度驗證
+    const wantsRerun = await postReviewMenu({ ...latest, engine, initialDefault: result ? undefined : '3' });
+    if (!wantsRerun) return;
+  }
+}
+
+/**
+ * 跑一次完整 review：取得 PR 資訊與 diff → 組 prompt → AI 分析 → 存報告。
+ * @param {{ repo: string, prNumber: string }} pr
+ * @param {object} engine
+ * @returns {Promise<{ reportFile: string, reportText: string, prDiff: string } | null>} 取不到 PR 資料時回傳 null
+ */
+async function runReview({ repo, prNumber }, engine) {
+  const totalStart = Date.now();
   console.log(`   → 使用: ${engineLabel(engine)}`);
   console.log('');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -888,11 +964,11 @@ async function cmdReview() {
   const [metaRes, diffRes] = await Promise.all([metaPromise, diffPromise]);
   if (metaRes.code !== 0) {
     console.log(`❌ 無法取得 PR 資訊: ${metaRes.stderr}`);
-    return;
+    return null;
   }
   if (diffRes.code !== 0) {
     console.log(`❌ 無法取得 diff: ${diffRes.stderr}`);
-    return;
+    return null;
   }
   const prMeta = JSON.parse(metaRes.stdout);
   const rawDiff = diffRes.stdout;
@@ -974,7 +1050,7 @@ ${prDiff}
   console.log(`✅ 完整報告已儲存至 ${outFile}`);
   printSummaryFooter(engine, totalSec, usage);
 
-  await postReviewMenu({ reportFile: outFile, reportText: text, prDiff, engine });
+  return { reportFile: outFile, reportText: text, prDiff };
 }
 
 function formatTimestamp() {
@@ -1256,24 +1332,8 @@ const CHAT_EXIT_KEYS = new Set(['exit', 'quit', 'q', ':q']);
  */
 async function cmdChatFromReport(reportFile) {
   const reportText = readFileSync(reportFile, 'utf8');
-  const prNumberFromName = (basename(reportFile).match(/PR_(\d+)_/) || [])[1];
-  const meta = parseVerifyMeta(reportText);
-  let pr = meta && prNumberFromName ? { repo: meta.repo, prNumber: prNumberFromName } : null;
-
-  // 自動取不到（改過檔名或報告太舊無 meta）才問 PR 連結
-  if (!pr) {
-    console.log('   ⚠️  無法從報告推導 repo／PR 編號');
-    const link = (await ask('📋 請貼上 PR 連結（直接 Enter 取消）：')).replace(/^["']|["']$/g, '').trim();
-    if (!link) {
-      console.log('   → 已取消聊天');
-      return;
-    }
-    pr = parsePrUrl(link);
-    if (!pr) {
-      console.log('❌ 無法解析 PR 連結');
-      return;
-    }
-  }
+  const pr = await resolvePrFromReport(reportFile, reportText, '聊天');
+  if (!pr) return;
   const { repo, prNumber } = pr;
 
   console.log(`📡 取回 PR diff（${repo} #${prNumber}）...`);
@@ -1633,10 +1693,12 @@ async function cmdShare(reportFile) {
 }
 
 /**
- * 分析結束後的選單：驗證 / 聊天 / 結束 / 分享連結（可循環）。
- * @param {{ reportFile: string, reportText: string, prDiff: string, engine: object }} ctx
+ * 分析結束後的選單：驗證 / 聊天 / 結束 / 分享連結 / 重新 review（除重新 review 外可循環）。
+ * @param {{ reportFile: string, reportText: string, prDiff: string, engine: object, initialDefault?: string }} ctx
+ *   initialDefault：首次 Enter 的預設選項；省略時有 🔴 BUG 為 '1'，否則 '3'
+ * @returns {Promise<boolean>} true 表示使用者要求重新 review，由呼叫端重跑
  */
-async function postReviewMenu({ reportFile, reportText, prDiff, engine }) {
+async function postReviewMenu({ reportFile, reportText, prDiff, engine, initialDefault }) {
   const bugCount = countBugs(reportText);
   if (bugCount > 0) {
     console.log('');
@@ -1646,7 +1708,7 @@ async function postReviewMenu({ reportFile, reportText, prDiff, engine }) {
     console.log('✅ 沒有 🔴 BUG 級問題');
   }
   // 執行動作後預設切回結束，避免習慣性 Enter 誤觸燒 token 的驗證/聊天
-  let defaultChoice = bugCount > 0 ? '1' : '3';
+  let defaultChoice = initialDefault ?? (bugCount > 0 ? '1' : '3');
   for (;;) {
     console.log('');
     console.log('接下來？');
@@ -1654,8 +1716,9 @@ async function postReviewMenu({ reportFile, reportText, prDiff, engine }) {
     console.log('  [2] 跟 AI 聊天（基於這份報告 + 原始 diff）');
     console.log('  [3] 結束');
     console.log('  [4] 產生分享連結（GitHub Gist）');
+    console.log('  [5] 重新 review（重抓最新 diff，沿用同一引擎）');
     console.log('');
-    const choice = await ask(`選擇 [1-4]（直接 Enter 為 ${defaultChoice}）: `, defaultChoice);
+    const choice = await ask(`選擇 [1-5]（直接 Enter 為 ${defaultChoice}）: `, defaultChoice);
     if (choice === '1') {
       await cmdVerify(reportFile, null, engine);
       defaultChoice = '3';
@@ -1664,10 +1727,15 @@ async function postReviewMenu({ reportFile, reportText, prDiff, engine }) {
       defaultChoice = '3';
     } else if (choice === '3') {
       console.log(`💡 稍後可執行: ./verify-bug.command ${reportFile}`);
-      return;
+      return false;
     } else if (choice === '4') {
       await cmdShare(reportFile);
       defaultChoice = '3';
+    } else if (choice === '5') {
+      console.log('');
+      console.log(`🔄 重新 review（上一份報告保留於 ${reportFile}）`);
+      console.log('');
+      return true;
     } else {
       console.log(`   ❌ 無效的選擇: ${choice}`);
     }
