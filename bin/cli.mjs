@@ -245,6 +245,19 @@ function capDiff(diff, max = MAX_DIFF_LINES) {
   return { diff: lines.slice(0, max).join('\n'), truncated: lines.length - max };
 }
 
+/**
+ * 以 Markdown code fence 包住內文；fence 長度取「內文最長反引號連續數 + 1」（至少 3），
+ * 內文自帶 ``` 時（diff 改到 markdown／文件很常見）才不會提早結束 fence。
+ * @param {string} lang fence 語言標記
+ * @param {string} text
+ * @returns {string}
+ */
+function fencedBlock(lang, text) {
+  const longestRun = (text.match(/`+/g) || []).reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = '`'.repeat(Math.max(3, longestRun + 1));
+  return `${fence}${lang}\n${text}\n${fence}`;
+}
+
 // ── 推理強度 ──────────────────────────────────────────────
 
 // Claude Code `--effort` 由弱到強。
@@ -798,13 +811,27 @@ function parsePrUrl(url) {
 }
 
 /**
- * 解析報告尾的 `<!-- verify-meta: repo=… branch=… -->`（與 share-meta 分開，勿混用）。
+ * 解析報告尾的 `<!-- verify-meta: repo=… branch=… [head=…] -->`（與 share-meta 分開，勿混用）。
+ * repo 是 PR 所在的 base repo；head 只有 fork PR 才有，是 branch 實際所在的 fork（owner/name）。
  * @param {string} reportText
- * @returns {{ repo: string, branch: string } | null}
+ * @returns {{ repo: string, branch: string, headRepo: string | null } | null}
  */
 function parseVerifyMeta(reportText) {
-  const m = String(reportText).match(/<!--\s*verify-meta:\s*repo=(\S+)\s+branch=(\S+?)\s*-->/);
-  return m ? { repo: m[1], branch: m[2] } : null;
+  const m = String(reportText).match(/<!--\s*verify-meta:\s*repo=(\S+)\s+branch=(\S+)(?:\s+head=(\S+))?\s*-->/);
+  return m ? { repo: m[1], branch: m[2], headRepo: m[3] || null } : null;
+}
+
+/**
+ * fork PR 的 head repo（owner/name）：head 分支在 fork 上，用 base repo 去 clone 會找不到或抓錯分支。
+ * 同 repo PR，或 fork 已被刪除（取不到 head repo）時回傳 null。
+ * @param {{ isCrossRepository?: boolean, headRepository?: { name?: string } | null, headRepositoryOwner?: { login?: string } | null }} prMeta
+ * @returns {string | null}
+ */
+function crossRepoHead(prMeta) {
+  if (!prMeta.isCrossRepository) return null;
+  const owner = prMeta.headRepositoryOwner?.login;
+  const name = prMeta.headRepository?.name;
+  return owner && name ? `${owner}/${name}` : null;
 }
 
 /**
@@ -959,7 +986,7 @@ async function runReview({ repo, prNumber }, engine) {
   const stepStart = Date.now();
   console.log('📡 [1/3] 取得 PR 資訊 + diff...');
   const metaPromise = sh('gh', ['pr', 'view', prNumber, '--repo', repo, '--json',
-    'title,additions,deletions,changedFiles,state,author,baseRefName,headRefName'], { captureStderr: true });
+    'title,additions,deletions,changedFiles,state,author,baseRefName,headRefName,isCrossRepository,headRepository,headRepositoryOwner'], { captureStderr: true });
   const diffPromise = sh('gh', ['pr', 'diff', prNumber, '--repo', repo], { captureStderr: true });
   const [metaRes, diffRes] = await Promise.all([metaPromise, diffPromise]);
   if (metaRes.code !== 0) {
@@ -1010,14 +1037,10 @@ async function runReview({ repo, prNumber }, engine) {
   const prompt = `${promptTemplate}
 ${notesBlock}
 ## PR Metadata (JSON)
-\`\`\`json
-${metaRes.stdout.trim()}
-\`\`\`
+${fencedBlock('json', metaRes.stdout.trim())}
 
 ## PR Diff
-\`\`\`diff
-${prDiff}
-\`\`\`
+${fencedBlock('diff', prDiff)}
 `;
   console.log(`   ✓ 完成 (${Math.floor((Date.now() - stepStart2) / 1000)}s)`);
   console.log('');
@@ -1029,12 +1052,13 @@ ${prDiff}
   const ts = formatTimestamp();
   if (!existsSync(RESULTS_DIR)) mkdirSync(RESULTS_DIR, { recursive: true });
   const outFile = join(RESULTS_DIR, `PR_${prNumber}_${ts}.md`);
+  const headRepo = crossRepoHead(prMeta);
   const body = [
     text,
     '',
     '---',
     footerLine(engine, totalSec, usage),
-    `<!-- verify-meta: repo=${repo} branch=${prMeta.headRefName} -->`,
+    `<!-- verify-meta: repo=${repo} branch=${prMeta.headRefName}${headRepo ? ` head=${headRepo}` : ''} -->`,
     '',
   ].join('\n');
   writeFileSync(outFile, body);
@@ -1144,11 +1168,13 @@ async function resolveProjectDir(reportText, projectDirArg) {
   if (!projectDir) {
     const meta = parseVerifyMeta(reportText);
     if (meta) {
-      const { repo, branch } = meta;
-      console.log(`📂 從報告取得 repo: ${repo} (${branch})`);
+      const { branch } = meta;
+      // fork PR 的分支在 fork 上：優先 clone head repo，否則用 base repo 會找不到或抓到同名的別條分支
+      const cloneRepo = meta.headRepo || meta.repo;
+      console.log(`📂 從報告取得 repo: ${cloneRepo} (${branch})`);
       console.log('   正在 clone...');
       projectDir = mkdtempSync(join(tmpdir(), 'verify-clone-'));
-      const { code } = await sh('gh', ['repo', 'clone', repo, projectDir, '--', '--depth', '1', '--branch', branch, '--single-branch']);
+      const { code } = await sh('gh', ['repo', 'clone', cloneRepo, projectDir, '--', '--depth', '1', '--branch', branch, '--single-branch']);
       if (code !== 0) {
         console.log('❌ Clone 失敗');
         rmSync(projectDir, { recursive: true, force: true });
@@ -1389,9 +1415,7 @@ async function runNativeChat({ engine, projectDir, ownsProjectDir = false, repor
       '',
       '## PR Diff',
       '',
-      '```diff',
-      prDiff,
-      '```',
+      fencedBlock('diff', prDiff),
       '',
     ].join('\n'));
     const firstPrompt = `請先讀 ${ctxFile}（內含 PR review 報告與 PR diff），然後與我多輪問答`;
@@ -1479,9 +1503,7 @@ async function chatViaApi({ reportFile, reportText, prDiff, engine, totalStart, 
       '',
       '## PR Diff',
       '',
-      '```diff',
-      prDiff,
-      '```',
+      fencedBlock('diff', prDiff),
       '',
       '## 對話歷史',
       '',

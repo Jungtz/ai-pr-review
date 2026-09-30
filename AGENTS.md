@@ -19,7 +19,8 @@
 - Windows spawn：`resolveCommand`＋`quoteArg` 繞過 Node 在 win32 執行 `.cmd/.bat` 的 EINVAL；動 `sh()` 前先讀懂它
 - prompt 一律走 stdin 餵入（Windows 命令列約 32KB 上限，diff 常超標），不可改為 argv 傳遞；唯一例外是原生聊天接管（`runNativeChat`）：上下文寫暫存檔，argv 只帶引用它的短 prompt
 - `sh()` 一律整段收 Buffer、結束後一次 decode；review／verify 引擎（`runClaude`／`runOpencode`）不可改成逐 chunk 解析，UTF-8 中文會被 chunk 邊界切成 `�`
-- review 報告尾的 `<!-- verify-meta: repo=… branch=… -->` 是 auto-clone 的資料源，改輸出格式時必須保留
+- review 報告尾的 `<!-- verify-meta: repo=… branch=… [head=…] -->` 是 auto-clone 的資料源，改輸出格式時必須保留；`head=`（fork 的 owner/name）只有 fork PR 才寫，clone 優先用它，`parseVerifyMeta` 必須同時接受有／無 `head` 的舊報告
+- 塞進 prompt／上下文檔的 diff 一律走 `fencedBlock`，不可手寫固定三個反引號的 fence（diff 內含 ``` 會提早結束 fence）
 - `.api-config` 存明文金鑰（已 gitignore）：不可印出、不可提交；`results/` 同樣不可提交
 
 ## 流程邏輯（改選單前先讀）
