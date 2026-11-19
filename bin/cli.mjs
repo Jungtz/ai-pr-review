@@ -208,41 +208,120 @@ const DIFF_EXCLUDE_PATTERNS = [
   /\.snap$/,
 ];
 
+// 截斷時排在程式碼之後的檔案：文件、資料、紀錄。gh 的 diff 依路徑排序，
+// 不重排的話 `docs/`、`REPORT.md` 會先吃光額度，`src/` 反而被截掉
+const LOW_PRIORITY_PATTERNS = [
+  /\.(md|mdx|txt|rst|adoc|jsonl|ndjson|csv|tsv|log)$/i,
+  /(^|\/)docs?\//i,
+];
+
 /**
- * 依 `diff --git` 邊界切檔，丟棄無 review 價值的檔案。
+ * 依 `diff --git` 邊界切檔。
+ * @param {string} diff
+ * @returns {{ lead: string, files: { path: string, text: string }[] }} lead 為第一個檔案前的內容（通常為空）
+ */
+function splitDiffByFile(diff) {
+  const parts = diff.split(/(?=^diff --git )/m);
+  let lead = '';
+  const files = [];
+  for (const part of parts) {
+    if (!part.startsWith('diff --git')) {
+      lead += part;
+      continue;
+    }
+    const m = part.match(/^diff --git a\/\S+ b\/(\S+)/);
+    files.push({ path: m ? m[1] : '', text: part });
+  }
+  return { lead, files };
+}
+
+/**
+ * @param {string} text
+ * @returns {number}
+ */
+function countLines(text) {
+  if (!text) return 0;
+  return text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
+}
+
+/**
+ * 丟棄無 review 價值的檔案。
  * @param {string} diff
  * @returns {{ diff: string, excluded: string[] }}
  */
 function filterDiff(diff) {
-  const parts = diff.split(/(?=^diff --git )/m);
+  const { lead, files } = splitDiffByFile(diff);
   const kept = [];
   const excluded = [];
-  for (const part of parts) {
-    if (!part.startsWith('diff --git')) {
-      if (part) kept.push(part); // 前導內容（通常為空）
-      continue;
-    }
-    const m = part.match(/^diff --git a\/\S+ b\/(\S+)/);
-    const path = m ? m[1] : '';
-    if (path && DIFF_EXCLUDE_PATTERNS.some(re => re.test(path))) {
-      excluded.push(path);
+  for (const file of files) {
+    if (file.path && DIFF_EXCLUDE_PATTERNS.some(re => re.test(file.path))) {
+      excluded.push(file.path);
     } else {
-      kept.push(part);
+      kept.push(file.text);
     }
   }
-  return { diff: kept.join(''), excluded };
+  return { diff: lead + kept.join(''), excluded };
 }
 
 /**
  * 超大 diff 截斷，避免單次燒掉大量 token。
+ * 程式碼優先、文件／資料排後；以整檔為單位塞進額度，放不下的跳過、讓後面較小的檔案補位，
+ * 最後剩餘額度再塞「優先序最高的未納入檔」前段，避免單一超大檔時整份 diff 為空。
  * @param {string} diff
  * @param {number} max
- * @returns {{ diff: string, truncated: number }}
+ * @returns {{ diff: string, truncated: number, omitted: string[], partial: string | null }}
+ *   truncated：未納入的行數；omitted：完全未納入的檔案；partial：只納入前段的檔案
  */
 function capDiff(diff, max = MAX_DIFF_LINES) {
-  const lines = diff.split('\n');
-  if (lines.length <= max) return { diff, truncated: 0 };
-  return { diff: lines.slice(0, max).join('\n'), truncated: lines.length - max };
+  const total = countLines(diff);
+  if (total <= max) return { diff, truncated: 0, omitted: [], partial: null };
+
+  const { lead, files } = splitDiffByFile(diff);
+  const isLowPriority = file => LOW_PRIORITY_PATTERNS.some(re => re.test(file.path));
+  const ordered = [...files.filter(f => !isLowPriority(f)), ...files.filter(isLowPriority)];
+
+  let remaining = max - countLines(lead);
+  const kept = [];
+  const skipped = [];
+  for (const file of ordered) {
+    const lines = countLines(file.text);
+    if (lines <= remaining) {
+      kept.push(file.text);
+      remaining -= lines;
+    } else {
+      skipped.push(file);
+    }
+  }
+
+  let partial = null;
+  if (skipped.length && remaining > 0) {
+    const [first] = skipped.splice(0, 1);
+    kept.push(`${first.text.split('\n').slice(0, remaining).join('\n')}\n`);
+    partial = first.path;
+  }
+
+  const capped = lead + kept.join('');
+  return {
+    diff: capped,
+    truncated: total - countLines(capped),
+    omitted: skipped.map(f => f.path),
+    partial,
+  };
+}
+
+/**
+ * 終端機印出 diff 過濾／截斷結果（review 與聊天共用）。
+ * @param {{ excluded: string[], truncated: number, omitted: string[], partial: string | null }} trim
+ */
+function printDiffTrim({ excluded, truncated, omitted, partial }) {
+  const preview = list => `${list.slice(0, 5).join(', ')}${list.length > 5 ? ' …' : ''}`;
+  if (excluded.length) {
+    console.log(`   ⏭  已排除 ${excluded.length} 個檔案: ${preview(excluded)}`);
+  }
+  if (!truncated) return;
+  console.log(`   ✂  diff 過長，已截斷 ${fmtNum(truncated)} 行（程式碼優先，文件／資料排後）`);
+  if (omitted.length) console.log(`   ⚠️  未納入 ${omitted.length} 個檔案: ${preview(omitted)}`);
+  if (partial) console.log(`   ⚠️  只納入前段: ${partial}`);
 }
 
 /**
@@ -394,7 +473,10 @@ async function runClaude(model, prompt, cwd, { effort } = {}) {
   return {
     text: json.result || '',
     usage: {
-      input_tokens: json.usage?.input_tokens || 0,
+      // 大部分輸入計在 cache 欄位，只讀 input_tokens 會顯示成個位數
+      input_tokens: (json.usage?.input_tokens || 0)
+        + (json.usage?.cache_creation_input_tokens || 0)
+        + (json.usage?.cache_read_input_tokens || 0),
       output_tokens: json.usage?.output_tokens || 0,
       cost_usd: json.total_cost_usd || 0,
     },
@@ -1034,17 +1116,10 @@ async function runReview({ repo, prNumber }, engine) {
 
   // 過濾無價值檔案 + 超大 diff 截斷（節省 token）
   const { diff: filteredDiff, excluded } = filterDiff(rawDiff);
-  const { diff: prDiff, truncated } = capDiff(filteredDiff);
+  const { diff: prDiff, truncated, omitted, partial } = capDiff(filteredDiff);
 
-  const rawLines = rawDiff.split('\n').length;
-  const diffLines = prDiff.split('\n').length;
-  console.log(`   ✓ ${diffLines} 行 diff (${Math.floor((Date.now() - stepStart) / 1000)}s)`);
-  if (excluded.length) {
-    console.log(`   ⏭  已排除 ${excluded.length} 個檔案: ${excluded.slice(0, 5).join(', ')}${excluded.length > 5 ? ' …' : ''}`);
-  }
-  if (truncated) {
-    console.log(`   ✂  diff 過長，已截斷 ${fmtNum(truncated)} 行（原 ${fmtNum(rawLines)} 行）`);
-  }
+  console.log(`   ✓ ${fmtNum(countLines(prDiff))} 行 diff（原 ${fmtNum(countLines(rawDiff))} 行）(${Math.floor((Date.now() - stepStart) / 1000)}s)`);
+  printDiffTrim({ excluded, truncated, omitted, partial });
   console.log('');
 
   // Load detection patterns
@@ -1060,7 +1135,13 @@ async function runReview({ repo, prNumber }, engine) {
     notes.push(`已省略 ${excluded.length} 個非程式碼/產生檔（lockfile、min、dist、snapshot 等），不需 review：${excluded.join(', ')}`);
   }
   if (truncated) {
-    notes.push(`diff 過長，已截斷末尾 ${truncated} 行，僅就前 ${MAX_DIFF_LINES} 行進行 review。`);
+    notes.push(`diff 過長（上限 ${MAX_DIFF_LINES} 行），已截斷 ${truncated} 行；檔案順序已重排為程式碼優先、文件／資料排後。`);
+    if (omitted.length) {
+      notes.push(`以下檔案完全未納入，不可對其內容下結論，請在總覽中列出建議另行審查：${omitted.join(', ')}`);
+    }
+    if (partial) {
+      notes.push(`\`${partial}\` 只納入前段，後段變更不可見。`);
+    }
   }
   const notesBlock = notes.length ? `\n## Diff 處理備註\n\n${notes.map(n => `- ${n}`).join('\n')}\n` : '';
   const guidelinesBlock = guidelines.length
@@ -1422,14 +1503,9 @@ async function cmdChatFromReport(reportFile) {
   }
   // 與 review 同一套過濾＋截斷，聊天看到的 diff 才一致
   const { diff: filteredDiff, excluded } = filterDiff(diffRes.stdout);
-  const { diff: prDiff, truncated } = capDiff(filteredDiff);
-  console.log(`   ✓ ${prDiff.split('\n').length} 行 diff`);
-  if (excluded.length) {
-    console.log(`   ⏭  已排除 ${excluded.length} 個檔案: ${excluded.slice(0, 5).join(', ')}${excluded.length > 5 ? ' …' : ''}`);
-  }
-  if (truncated) {
-    console.log(`   ✂  diff 過長，已截斷 ${fmtNum(truncated)} 行`);
-  }
+  const { diff: prDiff, truncated, omitted, partial } = capDiff(filteredDiff);
+  console.log(`   ✓ ${fmtNum(countLines(prDiff))} 行 diff`);
+  printDiffTrim({ excluded, truncated, omitted, partial });
   // 報告未存當時的 head SHA，無從比對；只能明講這是現況 diff，交由使用者與 AI 留意
   console.log('   ℹ️  這是 PR 目前的 diff；review 後若有新 commit，可能與報告內容不一致');
 

@@ -29,6 +29,7 @@
 
 - `cmdReview` 入口若收到 `.md` 路徑，先經 `looksLikeReviewReport` 判定，屬實則三選一：`cmdShare`（分享）、`cmdChatFromReport`（聊天；抓到的是 PR 現況 diff，經 `diffNote` 告知 AI 可能與報告不一致）或重新 review（選一次引擎後進 `reviewWithMenu`）；分享／聊天不跑 review；無效輸入重問。聊天與重新 review 都經 `resolvePrFromReport` 由檔名 PR 編號＋`verify-meta` 推導 PR，取不到才問 PR 連結
 - `reviewWithMenu` 以迴圈呼叫 `runReview`（單次 review：取 PR 資料→分析→存報告）再進 `postReviewMenu`（驗證／聊天／結束／分享連結／重新 review，除重新 review 外可循環；動作完成後預設切回結束防誤觸）。選重新 review 時選單回傳 `true`、由迴圈重跑（沿用同一引擎、重抓最新 diff、新報告另存舊報告保留）；重跑失敗（取不到 PR 資料或引擎拋例外）則回到上一份報告的選單，且經 `initialDefault` 固定預設為結束，避免舊報告的 🔴 BUG 讓習慣性 Enter 再觸發深度驗證；首次就失敗則照舊結束／往外拋
+- diff 超過 `MAX_DIFF_LINES` 時，`capDiff` 先排序成程式碼在前、文件／資料（`LOW_PRIORITY_PATTERNS`）在後，以整檔為單位塞進額度，放不下的跳過、改塞後面較小的檔；未納入的檔名寫進 prompt 備註。gh 的 diff 依路徑排序，不能退回成照順序直接截斷
 - `runReview` 經 `fetchGuidelines` 從 base 分支抓根目錄 `CLAUDE.md`／`AGENTS.md` 塞進 prompt，抓不到就略過、不中斷
 - `cmdVerify`：單次批次驗證，一律全驗；附報告「問題清單」之前的段落（Pre-Analysis／總覽）作為 PR 背景
 - `cmdChat` 依引擎分流：claude／opencode 進場即 clone codebase（失敗才降級為報告＋diff），交給原生互動 CLI（`runNativeChat`，stdio 繼承；紀錄留在該 CLI 的 session，不寫 `_chat.md`）；API 引擎無法讀檔，不 clone，走內建串流迴圈（`chatViaApi`，寫 `_chat.md`）

@@ -73,6 +73,7 @@ review-pr.bat
          ↓
 📡 自動取得 PR 資訊（含 description）+ diff + 專案規範檔（via gh CLI）
    - 規範檔：base 分支根目錄的 CLAUDE.md／AGENTS.md，沒有就略過
+   - diff 超過 3000 行時程式碼優先、文件／資料排後，並列出未納入的檔案
         ↓
 🔧 載入通用 detection patterns
         ↓
