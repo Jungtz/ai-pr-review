@@ -71,7 +71,8 @@ review-pr.bat
    [3] opencode
    [4] OpenAI 相容 API（Ollama / OpenRouter / 其他）
          ↓
-📡 自動取得 PR 資訊 + diff（via gh CLI）
+📡 自動取得 PR 資訊（含 description）+ diff + 專案規範檔（via gh CLI）
+   - 規範檔：base 分支根目錄的 CLAUDE.md／AGENTS.md，沒有就略過
         ↓
 🔧 載入通用 detection patterns
         ↓
@@ -103,8 +104,8 @@ review-pr.bat
         ↓
 🔧 提取報告中所有 🔴 問題（一律全部驗證）
         ↓
-🤖 AI 逐一讀取原始碼進行驗證
-   - CONFIRMED：確認是 BUG
+🤖 AI 先讀專案規範，依報告的 PR 背景逐一讀取原始碼驗證
+   - CONFIRMED：確認是 BUG（須寫出具體觸發情境）
    - FALSE POSITIVE：誤報
    - POTENTIAL：潛在風險
         ↓
@@ -153,13 +154,13 @@ OpenAI 相容 API（無法讀檔，不 clone，僅依報告 + diff 回答）
 Review 報告儲存為 `PR_{number}_{timestamp}.md`，包含：
 
 - PR 總覽（標題、作者、分支、變更統計）
-- 問題清單（🔴 BUG / 🟡 WARN / 🟢 NIT）
+- 問題清單（🔴 BUG / 🟡 WARN / 🟢 NIT，附 `path:line` 位置；違反專案規範時引用規則原文）
 - 彙整表
 - 判定結果（APPROVE / REQUEST CHANGES / COMMENT）
 
 驗證報告儲存為 `PR_{number}_{timestamp}_verify.md`，包含：
 
-- 每個 🔴 問題的驗證結論與分析過程
+- 每個 🔴 問題的驗證結論、觸發情境與分析過程
 - 驗證摘要統計
 
 聊天紀錄（僅 OpenAI 相容 API 引擎；Claude／opencode 的紀錄在各自 session）儲存為 `PR_{number}_{timestamp}_chat.md`（多次聊天則追加），包含：
@@ -169,7 +170,7 @@ Review 報告儲存為 `PR_{number}_{timestamp}.md`，包含：
 
 ## Detection Patterns
 
-`prompts/patterns.md` 定義了通用的 detection checklist（邊界條件、邏輯錯誤、race condition、資源洩漏、安全問題等）。
+`prompts/patterns.md` 定義了通用的 detection checklist（邊界條件、邏輯錯誤、複製貼上錯誤、race condition、缺少 await、資源洩漏、注入等）。
 
 語言特定的 pattern 不需要額外維護 — AI 本身已具備各語言的深度知識，通用 checklist 足以引導分析方向。
 

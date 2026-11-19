@@ -969,6 +969,32 @@ async function reviewWithMenu(pr, engine) {
   }
 }
 
+// 目標 repo 根目錄的 AI 協作規範檔：review 據此檢查明文規則違反
+const GUIDELINE_FILES = ['CLAUDE.md', 'AGENTS.md'];
+const MAX_GUIDELINE_CHARS = 20000;
+
+/**
+ * 從 PR base 分支抓取根目錄規範檔；不存在或抓取失敗的檔案直接略過（規範檔非必要）。
+ * @param {string} repo owner/name
+ * @param {string} ref base 分支
+ * @returns {Promise<{ path: string, content: string }[]>}
+ */
+async function fetchGuidelines(repo, ref) {
+  const results = await Promise.all(GUIDELINE_FILES.map(async path => {
+    const { code, stdout } = await sh('gh', ['api', '-X', 'GET', `repos/${repo}/contents/${path}`,
+      '-f', `ref=${ref}`, '-H', 'Accept: application/vnd.github.raw'], { captureStderr: true });
+    const content = stdout.trim();
+    if (code !== 0 || !content) return null;
+    return {
+      path,
+      content: content.length > MAX_GUIDELINE_CHARS
+        ? `${content.slice(0, MAX_GUIDELINE_CHARS)}\n\n（以下已截斷）`
+        : content,
+    };
+  }));
+  return results.filter(Boolean);
+}
+
 /**
  * 跑一次完整 review：取得 PR 資訊與 diff → 組 prompt → AI 分析 → 存報告。
  * @param {{ repo: string, prNumber: string }} pr
@@ -986,7 +1012,7 @@ async function runReview({ repo, prNumber }, engine) {
   const stepStart = Date.now();
   console.log('📡 [1/3] 取得 PR 資訊 + diff...');
   const metaPromise = sh('gh', ['pr', 'view', prNumber, '--repo', repo, '--json',
-    'title,additions,deletions,changedFiles,state,author,baseRefName,headRefName,isCrossRepository,headRepository,headRepositoryOwner'], { captureStderr: true });
+    'title,body,additions,deletions,changedFiles,state,author,baseRefName,headRefName,isCrossRepository,headRepository,headRepositoryOwner'], { captureStderr: true });
   const diffPromise = sh('gh', ['pr', 'diff', prNumber, '--repo', repo], { captureStderr: true });
   const [metaRes, diffRes] = await Promise.all([metaPromise, diffPromise]);
   if (metaRes.code !== 0) {
@@ -1001,6 +1027,10 @@ async function runReview({ repo, prNumber }, engine) {
   const rawDiff = diffRes.stdout;
   console.log(`   ✓ ${prMeta.title}`);
   console.log(`   ✓ ${prMeta.changedFiles} 個檔案 | +${prMeta.additions} -${prMeta.deletions}`);
+  const guidelines = await fetchGuidelines(repo, prMeta.baseRefName);
+  if (guidelines.length) {
+    console.log(`   ✓ 專案規範：${guidelines.map(g => g.path).join(', ')}`);
+  }
 
   // 過濾無價值檔案 + 超大 diff 截斷（節省 token）
   const { diff: filteredDiff, excluded } = filterDiff(rawDiff);
@@ -1033,15 +1063,21 @@ async function runReview({ repo, prNumber }, engine) {
     notes.push(`diff 過長，已截斷末尾 ${truncated} 行，僅就前 ${MAX_DIFF_LINES} 行進行 review。`);
   }
   const notesBlock = notes.length ? `\n## Diff 處理備註\n\n${notes.map(n => `- ${n}`).join('\n')}\n` : '';
+  const guidelinesBlock = guidelines.length
+    ? `\n## Project Guidelines（目標 repo 規範檔，取自 base 分支 \`${prMeta.baseRefName}\`）\n\n${guidelines
+      .map(g => `### ${g.path}\n\n${fencedBlock('markdown', g.content)}`).join('\n\n')}\n`
+    : '';
 
-  const prompt = `${promptTemplate}
-${notesBlock}
-## PR Metadata (JSON)
+  // 長資料在前、指令在後：長上下文下模型對結尾指令的遵循度較好
+  const prompt = `## PR Metadata (JSON)
 ${fencedBlock('json', metaRes.stdout.trim())}
-
+${guidelinesBlock}${notesBlock}
 ## PR Diff
 ${fencedBlock('diff', prDiff)}
-`;
+
+---
+
+${promptTemplate}`;
   console.log(`   ✓ 完成 (${Math.floor((Date.now() - stepStart2) / 1000)}s)`);
   console.log('');
 
@@ -1143,11 +1179,23 @@ function countBugs(reportText) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
-// 掃描所有「結論」行，統計各判定數量（支援單次批次驗證多個問題的輸出）。
+/**
+ * 截取報告「問題清單」之前的段落（Pre-Analysis／總覽），作為驗證時的 PR 背景。
+ * 找不到問題清單標題（格式異常）時回傳空字串，由驗證 prompt 自行從 codebase 推斷。
+ * @param {string} reportText
+ * @returns {string}
+ */
+function extractReviewContext(reportText) {
+  const idx = reportText.search(/^#+\s*問題清單/m);
+  return idx > 0 ? reportText.slice(0, idx).trim() : '';
+}
+
+// 掃描所有「結論：」行，統計各判定數量（支援單次批次驗證多個問題的輸出）。
+// 只認行首（可帶 markdown 標記）的「結論：」，避免分析段落提到「結論為 X」被重複計數。
 function countVerdicts(resultText) {
   const counts = { CONFIRMED: 0, FALSE_POSITIVE: 0, POTENTIAL: 0 };
   for (const line of resultText.split('\n')) {
-    if (!/結論/.test(line)) continue;
+    if (!/^[\s>*#_-]*結論[*_\s]*[:：]/.test(line)) continue;
     if (/FALSE\s+POSITIVE/.test(line)) counts.FALSE_POSITIVE++;
     else if (/CONFIRMED/.test(line)) counts.CONFIRMED++;
     else if (/POTENTIAL/.test(line)) counts.POTENTIAL++;
@@ -1287,9 +1335,13 @@ async function cmdVerify(reportFileArg, projectDirArg, engineArg) {
   const issuesBlock = selected
     .map(({ block }, n) => `### 問題 ${n + 1}：${titleOf(block)}\n\n${block}`)
     .join('\n\n---\n\n');
+  const reviewContext = extractReviewContext(reportText);
+  const contextBlock = reviewContext
+    ? `## PR 背景（review 報告的 Pre-Analysis／總覽）\n\n${fencedBlock('markdown', reviewContext)}\n\n`
+    : '## PR 背景\n\n（原報告無 Pre-Analysis／總覽，請依問題描述與 codebase 推斷）\n\n';
   const promptHeader = isWarnFallback
-    ? `${promptTemplate}\n\n> 註：原報告無 🔴 BUG，本次為 🟡 WARN fallback 驗證。請以同等嚴謹度判斷每個 WARN 是否實為 BUG / 誤報 / 潛在風險。\n\n## The WARN issues to verify（共 ${selected.length} 個，逐一驗證）\n\n`
-    : `${promptTemplate}\n\n## The issues to verify（共 ${selected.length} 個，逐一驗證）\n\n`;
+    ? `${promptTemplate}\n\n${contextBlock}> 註：原報告無 🔴 BUG，本次為 🟡 WARN fallback 驗證。請以同等嚴謹度判斷每個 WARN 是否實為 BUG / 誤報 / 潛在風險。\n\n## The WARN issues to verify（共 ${selected.length} 個，逐一驗證）\n\n`
+    : `${promptTemplate}\n\n${contextBlock}## The issues to verify（共 ${selected.length} 個，逐一驗證）\n\n`;
   const prompt = `${promptHeader}${issuesBlock}\n`;
 
   selected.forEach(({ block }, n) => console.log(`   [${n + 1}/${selected.length}] ${titleOf(block)}`));

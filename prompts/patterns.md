@@ -24,7 +24,27 @@
   ```
   </example>
 
+- **Copy-paste error**: 複製相似區塊後漏改變數、欄位或條件，導致兩處引用同一個值
+
+  <example>
+  ❌ 有問題：
+  ```
+  const width = rect.width
+  const height = rect.width   // 應為 rect.height
+  ```
+  </example>
+
 - **Race condition**: 多個非同步操作之間存在隱含的順序依賴，但沒有明確等待或同步機制
+
+- **Missing await / unhandled promise**: async 呼叫沒有 await 或沒有處理 rejection，導致後續程式在結果就緒前執行，或錯誤被吞掉
+
+  <example>
+  ❌ 有問題：
+  ```
+  const user = getUser(id)                     // getUser 是 async，user 實為 Promise
+  items.forEach(async i => await save(i))      // forEach 不等待，外層以為已全部完成
+  ```
+  </example>
 
 - **Error swallowed silently**: catch/except/recover 區塊為空或只有 log，沒有重新拋出或回傳錯誤狀態，導致上層無法得知失敗
 
@@ -39,6 +59,16 @@
 - **Resource leak**: 開啟的檔案、連線、subscription 沒有在所有路徑（包括 error path）中正確關閉或清理
 
 - **Hardcoded secret / credential**: 程式碼中直接寫入 API key、密碼、token 等敏感資訊
+
+- **Injection / unsafe input**: 未經驗證或跳脫的外部輸入直接拼進 SQL、shell 指令、HTML、檔案路徑。須能在 diff 中指出具體的輸入來源與落點，否則屬於泛用安全建議，不報
+
+  <example>
+  ❌ 有問題：
+  ```
+  db.query(`SELECT * FROM users WHERE id = ${req.query.id}`)   // SQL injection
+  el.innerHTML = params.get('name')                             // XSS
+  ```
+  </example>
 
 - **Duplicated logic**: 相同的邏輯出現在多處，應抽成共用函式
 
