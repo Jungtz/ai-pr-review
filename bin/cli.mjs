@@ -1202,8 +1202,18 @@ function formatTimestamp() {
 
 // ── Command: verify ───────────────────────────────────────
 
+/**
+ * 擷取標題（`#` 或 `*` 開頭）含指定燈號的問題區塊。
+ * 有「問題清單」標題時只掃問題清單到彙整表之間，避免 Pre-Analysis／總覽提到燈號的粗體行被當成問題；
+ * 舊報告無此標題則掃全文。
+ * @param {string} reportText
+ * @param {string} emoji
+ * @returns {string[]}
+ */
 function extractBlocks(reportText, emoji) {
-  const lines = reportText.split('\n');
+  const allLines = reportText.split('\n');
+  const listStart = allLines.findIndex(line => /^#+\s*問題清單/.test(line));
+  const lines = listStart >= 0 ? allLines.slice(listStart + 1) : allLines;
   const blocks = [];
   let buf = [];
   const flush = () => { if (buf.length) blocks.push(buf.join('\n')); buf = []; };
@@ -1244,20 +1254,22 @@ function titleOf(block) {
 
 /**
  * 統計 🔴 BUG 級問題數量。
- * 優先掃「彙整表」表格列（結構化，較不受排版影響），
- * 其次回退到問題清單區塊數，最後才用「統計」行。
+ * 彙整表與「統計」行是結構化來源：任一存在就以它為準（含 0），兩者都有取較大值，
+ * 讓模型偶發把燈號輸出成亂碼（如 `��`）時仍有另一來源兜底。
+ * 兩者皆無（格式異常的報告）才回退到問題清單區塊數。
  * @param {string} reportText
  * @returns {number}
  */
 function countBugs(reportText) {
-  const rows = reportText.split('\n').filter(line =>
-    /^\s*\|/.test(line) && /🔴/.test(line) && !/燈號/.test(line) && !/^\s*\|[\s|:-]*$/.test(line));
-  if (rows.length) return rows.length;
-  const blocks = extractBugBlocks(reportText).length;
-  if (blocks) return blocks;
-  const statsLine = reportText.split('\n').find(l => /統計/.test(l) && /🔴/.test(l));
-  const m = statsLine?.match(/🔴[^/]*?(\d+)/);
-  return m ? parseInt(m[1], 10) : 0;
+  const lines = reportText.split('\n');
+  const hasTable = lines.some(line => /^\s*\|/.test(line) && /燈號/.test(line));
+  const tableCount = lines.filter(line =>
+    /^\s*\|/.test(line) && /🔴/.test(line) && !/燈號/.test(line) && !/^\s*\|[\s|:-]*$/.test(line)).length;
+  const statsMatch = lines.find(l => /統計/.test(l) && /🔴/.test(l))?.match(/🔴[^/]*?(\d+)/);
+  const statsCount = statsMatch ? parseInt(statsMatch[1], 10) : null;
+
+  if (hasTable || statsCount !== null) return Math.max(hasTable ? tableCount : 0, statsCount ?? 0);
+  return extractBugBlocks(reportText).length;
 }
 
 /**

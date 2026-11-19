@@ -21,7 +21,7 @@
 - `sh()` 一律整段收 Buffer、結束後一次 decode；review／verify 引擎（`runClaude`／`runOpencode`）不可改成逐 chunk 解析，UTF-8 中文會被 chunk 邊界切成 `�`
 - review 報告尾的 `<!-- verify-meta: repo=… branch=… [head=…] -->` 是 auto-clone 的資料源，改輸出格式時必須保留；`head=`（fork 的 owner/name）只有 fork PR 才寫，clone 優先用它，`parseVerifyMeta` 必須同時接受有／無 `head` 的舊報告
 - review prompt 組裝順序為資料在前（metadata 含 `body`、規範檔、diff 備註、diff）、`review-pr.md` 指令在後，`review-pr.md` 以「above」指涉資料；調整順序時兩邊同步
-- 報告的 `問題清單` 標題是 `extractReviewContext` 的切點；驗證輸出行首的 `結論：` 是 `countVerdicts` 的唯一資料源；改 `review-pr.md`／`verify-bug.md` 輸出格式時都要保留
+- 報告的 `問題清單` 標題是 `extractReviewContext` 與 `extractBlocks` 的切點；`countBugs` 以彙整表（`燈號` 表頭）與「統計」行為準，兩者皆無才數區塊；驗證輸出行首的 `結論：` 是 `countVerdicts` 的唯一資料源；改 `review-pr.md`／`verify-bug.md` 輸出格式時都要保留
 - 塞進 prompt／上下文檔的 diff 一律走 `fencedBlock`，不可手寫固定三個反引號的 fence（diff 內含 ``` 會提早結束 fence）
 - `.api-config` 存明文金鑰（已 gitignore）：不可印出、不可提交；`results/` 同樣不可提交
 
