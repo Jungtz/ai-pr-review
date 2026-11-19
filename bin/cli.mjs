@@ -1265,7 +1265,9 @@ function countBugs(reportText) {
   const hasTable = lines.some(line => /^\s*\|/.test(line) && /燈號/.test(line));
   const tableCount = lines.filter(line =>
     /^\s*\|/.test(line) && /🔴/.test(line) && !/燈號/.test(line) && !/^\s*\|[\s|:-]*$/.test(line)).length;
-  const statsMatch = lines.find(l => /統計/.test(l) && /🔴/.test(l))?.match(/🔴[^/]*?(\d+)/);
+  // 統計行須以「統計：」開頭（可帶 markdown 標記），數字須緊跟 🔴：
+  // 判定說明常同時出現「🔴」「統計」與其他數字（例：「沒有 🔴 問題…統計排除…第 1 項」），寬鬆比對會誤抓
+  const statsMatch = lines.find(l => /^[\s>*#-]*統計[*\s]*[:：]/.test(l))?.match(/🔴[^/\d]{0,10}(\d+)/);
   const statsCount = statsMatch ? parseInt(statsMatch[1], 10) : null;
 
   if (hasTable || statsCount !== null) return Math.max(hasTable ? tableCount : 0, statsCount ?? 0);
